@@ -1,0 +1,36 @@
+Name:               type-encode
+Version:            0.1.1
+Cabal-Version:      >= 1.6
+Synopsis:           Convert lambda expressions to CCC combinators
+Category:           categories
+Description:        Convert lambda expressions to CCC combinators
+Author:             Conal Elliott
+Maintainer:         conal@tabula.com
+Copyright:          (c) 2014 by Tabula, Inc
+License:            BSD3
+License-File:       COPYING
+Stability:          experimental
+build-type:         Simple
+
+Extra-Source-Files:
+                    test/Tests.hs
+                    test/Tests.hss
+
+source-repository head
+  type:             git
+  location:         git://github.com/conal/type-encode
+
+Library
+  hs-Source-Dirs:   src
+  Build-Depends:    base < 5
+                  , ghc >= 7.6
+                  , ghc-prim
+                  , kure   >= 0.4.0.0
+                  , hermit >= 0.4.0.0
+  Exposed-Modules:
+                    TypeEncode.Plugin
+
+
+  Other-Modules:
+                    TypeEncode.Tests
+
