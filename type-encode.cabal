@@ -28,9 +28,5 @@ Library
                   , kure   >= 0.4.0.0
                   , hermit >= 0.4.0.0
   Exposed-Modules:
+                    TypeEncode.Encode
                     TypeEncode.Plugin
-
-
-  Other-Modules:
-                    TypeEncode.Tests
-

@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds #-}
+{-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds, FlexibleContexts #-}
 {-# OPTIONS_GHC -Wall #-}
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
@@ -12,7 +12,9 @@
 -- Maintainer  :  conal@tabula.com
 -- Stability   :  experimental
 -- 
--- Type-encode algebraic types
+-- Type-encode algebraic types. To test, compile and
+-- 
+--   cd ../../test; hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
 ----------------------------------------------------------------------
 
 module TypeEncode.Plugin (plugin) where
@@ -28,10 +30,10 @@ import Control.Arrow (arr,(>>>))
 import Data.List (intercalate)
 import Text.Printf (printf)
 
-import HERMIT.Monad (newIdH)
-import HERMIT.Context (BoundVars,HasGlobalRdrEnv(..))
+import HERMIT.Monad (newIdH,HermitM)
+import HERMIT.Context (BoundVars,HasGlobalRdrEnv(..),HermitC)
 import HERMIT.Core (Crumb(..),localFreeIdsExpr,CoreProg(..),bindsToProg,progToBinds)
-import HERMIT.External (External,external)
+import HERMIT.External (External,external,ExternalName,ExternalHelp)
 import HERMIT.GHC hiding (mkStringExpr)
 import HERMIT.Kure hiding (apply)
 -- Note that HERMIT.Dictionary re-exports HERMIT.Dictionary.*
@@ -92,6 +94,22 @@ type OkCM c m =
 
 type TranslateU b = forall c m a. OkCM c m => Translate c m a b
 
+-- | Lookup the name in the context first, then, failing that, in GHC's global
+-- reader environment.
+findTyConT :: String -> TranslateU TyCon
+findTyConT nm =
+  prefixFailMsg ("Cannot resolve name " ++ nm ++ ", ") $
+  contextonlyT (findTyConMG nm)
+
+findTyConMG :: OkCM c m => String -> c -> m TyCon
+findTyConMG nm c =
+    case filter isTyConName $ findNamesFromString (hermitGlobalRdrEnv c) nm of
+      [n] -> lookupTyCon n
+      ns  -> do dynFlags <- getDynFlags
+                fail $ show (length ns) 
+                     ++ " matches found: "
+                     ++ intercalate ", " (showPpr dynFlags <$> ns)
+
 {--------------------------------------------------------------------
     Rewrites
 --------------------------------------------------------------------}
@@ -105,6 +123,24 @@ appsE = apps' . encName
 callNameEnc :: String -> TranslateH CoreExpr (CoreExpr, [CoreExpr])
 callNameEnc = callNameT . encName
 
+encodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
+encodeOf ty ty' e = appsE "encode" [ty,ty'] [e]
+
+decodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
+decodeOf ty ty' e = appsE "decode" [ty',ty] [e]
+
+encodeR :: Type -> Type -> ReExpr
+encodeR ty ty' = idR >>= encodeOf ty ty'
+
+decodeR :: Type -> Type -> ReExpr
+decodeR ty ty' = idR >>= decodeOf ty ty'
+
+-- e --> decode (encode e)
+decodeEncodeR :: ReExpr
+decodeEncodeR = do ty  <- exprType <$> idR
+                   ty' <- encodedTy ty
+                   decodeR ty ty' . encodeR ty ty'
+
 -- encode u --> u
 unEncode :: ReExpr
 unEncode = do (_encodeE, [Type _, arg]) <- callNameEnc "encode"
@@ -115,20 +151,14 @@ unDecode = do (_decodeE, [Type _, body]) <- callNameEnc "decode"
               return body
 
 -- encode (decode e) --> e
-encodeDecode :: ReExpr
-encodeDecode = unEncode >>> unDecode
+unEncodeDecode :: ReExpr
+unEncodeDecode = unEncode >>> unDecode
 
+-- Stub: For now encode ty as () -> ty
 encodedTy :: Type -> TranslateU Type
-encodedTy = error "encodedTy: not implemented"
+encodedTy ty = return (FunTy unitTy ty)
 
-encodeOf :: Type -> CoreExpr -> TranslateU CoreExpr
-encodeOf ty e = do ty' <- encodedTy ty
-                   appsE "encode" [ty,ty'] [e]
-
-decodeOf :: Type -> CoreExpr -> TranslateU CoreExpr
-decodeOf ty e = do ty' <- encodedTy ty
-                   appsE "decode" [ty',ty] [e]
-
+-- encodedTy = error "encodedTy: not implemented"
 
 -- -- | Rewrite a constructor application, eta-expanding if necessary.
 -- reCtor :: ReExpr
@@ -141,6 +171,11 @@ decodeOf ty e = do ty' <- encodedTy ty
 plugin :: Plugin
 plugin = hermitPlugin (phase 0 . interactive externals)
 
-externals :: [External]
-externals = []
+externC :: Injection a Core =>
+           ExternalName -> RewriteH a -> String -> External
+externC name rew help = external name (promoteR rew :: ReCore) [help]
 
+externals :: [External]
+externals =
+  [ externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
+  ]
