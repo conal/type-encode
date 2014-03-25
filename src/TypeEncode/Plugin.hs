@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds, FlexibleContexts #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wall #-}
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
@@ -81,6 +82,15 @@ tyArity = length . fst . splitForAllTys . varType
 apps' :: String -> [Type] -> [CoreExpr] -> TranslateU CoreExpr
 apps' s ts es = (\ i -> apps i ts es) `liftM` findIdT s
 
+tyNumArgs :: Type -> Int
+tyNumArgs (FunTy    _ ty')       = 1 + tyNumArgs ty'
+tyNumArgs (ForAllTy _ ty')       = 1 + tyNumArgs ty'
+tyNumArgs (coreView -> Just ty') = tyNumArgs ty'
+tyNumArgs _                      = 0
+
+uqVarName :: Var -> String
+uqVarName = uqName . varName
+
 {--------------------------------------------------------------------
     HERMIT utilities
 --------------------------------------------------------------------}
@@ -160,9 +170,28 @@ encodedTy ty = return (FunTy unitTy ty)
 
 -- encodedTy = error "encodedTy: not implemented"
 
--- -- | Rewrite a constructor application, eta-expanding if necessary.
--- reCtor :: ReExpr
--- reCtor 
+-- | Rewrite a constructor application, eta-expanding if necessary.
+-- Must be saturated with type and value arguments.
+reCtor :: ReExpr
+reCtor = do e@(collectArgs -> (v@(Var (idIsCtor -> True)), args)) <- idR
+            guardMsg (length args == tyNumArgs (exprType v)) "Unsaturated"
+            guardMsg (not (isIntTy (exprType e))) "Int"
+            decodeEncodeR
+
+isIntTy :: Type -> Bool
+isIntTy (TyConApp tc []) = tc == intTyCon
+isIntTy _ = False
+
+idIsCtor :: Id -> Bool
+idIsCtor x = isId x && detailsIsCtor (idDetails x)
+ where
+   detailsIsCtor :: IdDetails -> Bool
+   -- detailsIsCtor (DataConWrapId _) = True
+   detailsIsCtor (DataConWorkId _) = True  -- Fires for :, []
+   detailsIsCtor _ = False
+
+-- TODO: Eta-expand as necessary
+-- TODO: Maybe distinguish boxings, e.g., (I# 1).
 
 {--------------------------------------------------------------------
     Plugin
@@ -178,4 +207,5 @@ externC name rew help = external name (promoteR rew :: ReCore) [help]
 externals :: [External]
 externals =
   [ externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
+  , externC "re-ctor" reCtor "v --> decode (encode v)"
   ]
