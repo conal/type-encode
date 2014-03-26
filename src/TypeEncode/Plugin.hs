@@ -1,5 +1,6 @@
 {-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds, FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns, TupleSections #-}
+{-# LANGUAGE DeriveFunctor, DeriveFoldable #-}
 {-# OPTIONS_GHC -Wall #-}
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
@@ -25,7 +26,9 @@ module TypeEncode.Plugin (plugin) where
 import Prelude hiding (id,(.))
 
 import Control.Category (Category(..))
+import Data.Monoid (Monoid(..))
 import Data.Functor ((<$>))
+import Data.Foldable (Foldable(..))
 import Control.Monad ((<=<),liftM)
 import Control.Arrow (arr,(>>>))
 import Data.List (intercalate,isSuffixOf)
@@ -70,6 +73,44 @@ infixl 1 <--
 (<--) :: Category cat =>
          (b `cat` b') -> (a' `cat` a) -> ((a `cat` b) -> (a' `cat` b'))
 (h <-- f) g = h . g . f
+
+data Tree a = Leaf a | Branch (Tree a) (Tree a)
+  deriving (Show,Functor,Foldable)
+
+toTree :: [a] -> Tree a
+toTree []  = error "toTree: empty list"
+toTree [a] = Leaf a
+toTree xs = Branch (toTree l) (toTree r)
+ where
+   (l,r) = splitAt (length xs `div` 2) xs
+
+foldT :: Binop a -> Tree a -> a
+foldT (#) = h
+ where
+   h (Leaf a)     = a
+   h (Branch u v) = h u # h v
+
+#if 0
+
+-- I could almost use fold along with EitherTy and PairTy monoids, each
+-- newtype-wrapping Type:
+
+newtype PairTy = PairTy Type
+
+instance Monoid PairTy where
+  mempty = PairTy unitTy
+  PairTy u `mappend` PairTy v = PairTy (u `pairTy` v)
+
+newtype EitherTy = EitherTy Type
+
+instance Monoid EitherTy where
+  mempty = EitherTy voidTy
+  EitherTy u `mappend` EitherTy v = EitherTy (u `eitherTy` v)
+
+-- Sadly, voidTy and eitherTy require looking up names. I'm tempted to use
+-- unsafePerformIO to give pure interfaces to all of these lookups.
+
+#endif
 
 {--------------------------------------------------------------------
     Core utilities
@@ -202,25 +243,34 @@ isBoolTy :: Type -> Bool
 isBoolTy (TyConApp tc []) = tc == boolTyCon
 isBoolTy _                = False
 
+-- Do I want to encode Bool? For now, no.
+
 isStandardTy :: Type -> Bool
 isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 
 encodeCon :: [Type] -> DataCon -> Type
 encodeCon tcTys con | null argTys = unitTy
-                    | otherwise   = foldl1 pairTy argTys
+                    | otherwise   = foldT pairTy (toTree argTys)
  where
    (tvs,body) = splitForAllTys (dataConRepType con)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
 
--- Stub: For now encode ty as () -> ty
-encodeTy :: Type -> TranslateU Type
-encodeTy (coreView   -> Just ty) = encodeTy ty
-encodeTy (isStandardTy -> True) = fail "Already a standard type"
-encodeTy (TyConApp (tyConDataCons -> cons) tcTys) | not (null cons) =
+encodeCons :: [Type] -> [DataCon] -> TranslateU Type
+encodeCons _ [] =
+  do voidTC <- findTyConT "TypeEncode.Encode.Void"
+     return (TyConApp voidTC [])
+encodeCons tcTys cons =
   do eitherTC <- findTyConT "Data.Either.Either"
      let eitherTy a b = TyConApp eitherTC [a,b]
-     return (foldl1 eitherTy (encodeCon tcTys <$> cons))
-encodeTy _ = fail "encodeTy: not handled"
+     return (foldT eitherTy (encodeCon tcTys <$> toTree cons))
+
+-- TODO: Handle no-constructor case as Void type.
+
+encodeTy :: Type -> TranslateU Type
+encodeTy (coreView   -> Just ty)                  = encodeTy ty
+encodeTy (isStandardTy -> True)                   = fail "Already a standard type"
+encodeTy (TyConApp (tyConDataCons -> cons) tcTys) = encodeCons tcTys cons
+encodeTy _                                        = fail "encodeTy: not handled"
 
 -- Not a function and not a forall
 groundType :: Type -> Bool
