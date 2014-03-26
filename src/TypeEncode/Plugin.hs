@@ -33,6 +33,7 @@ import Data.Maybe (isJust)
 import Text.Printf (printf)
 
 -- GHC
+import PrelNames (eitherTyConName)
 
 import HERMIT.Monad (newIdH,HermitM)
 import HERMIT.Context (BoundVars,HasGlobalRdrEnv(..),HermitC)
@@ -59,6 +60,9 @@ import TypeEncode.Encode (encode,decode)
 
 -- | Unary transformation
 type Unop a = a -> a
+
+-- | Binary transformation
+type Binop a = a -> Unop a
 
 infixl 1 <--
 
@@ -103,6 +107,9 @@ exprType' e = exprType e
 isType :: CoreExpr -> Bool
 isType (Type {}) = True
 isType _         = False
+
+pairTy :: Binop Type
+pairTy a b = mkBoxedTupleTy [a,b]
 
 {--------------------------------------------------------------------
     HERMIT utilities
@@ -163,7 +170,7 @@ decodeEncodeR :: ReExpr
 decodeEncodeR = do e   <- idR
                    guardMsg (not (isType e)) "Given a Type expression"
                    let ty = exprType' e
-                   ty' <- encodedTy ty
+                   ty' <- encodeTy ty
                    decodeR ty ty' . encodeR ty ty'
 
 -- encode u --> u
@@ -179,11 +186,41 @@ unDecode = do (_decode, [Type _, body]) <- callNameEnc "decode"
 unEncodeDecode :: ReExpr
 unEncodeDecode = unEncode >>> unDecode
 
--- Stub: For now encode ty as () -> ty
-encodedTy :: Type -> TranslateU Type
-encodedTy ty = return (FunTy unitTy ty)
+isPairTy :: Type -> Bool
+isPairTy (TyConApp tc [_,_]) = isBoxedTupleTyCon tc
+isPairTy _                   = False
 
--- encodedTy = error "encodedTy: not implemented"
+isEitherTy :: Type -> Bool
+isEitherTy (TyConApp tc [_,_]) = tyConName tc == eitherTyConName
+isEitherTy _                   = False
+
+isUnitTy :: Type -> Bool
+isUnitTy (TyConApp tc []) = tc == unitTyCon
+isUnitTy _                = False
+
+isBoolTy :: Type -> Bool
+isBoolTy (TyConApp tc []) = tc == boolTyCon
+isBoolTy _                = False
+
+isStandardTy :: Type -> Bool
+isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
+
+encodeCon :: [Type] -> DataCon -> Type
+encodeCon tcTys con | null argTys = unitTy
+                    | otherwise   = foldl1 pairTy argTys
+ where
+   (tvs,body) = splitForAllTys (dataConRepType con)
+   argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
+
+-- Stub: For now encode ty as () -> ty
+encodeTy :: Type -> TranslateU Type
+encodeTy (coreView   -> Just ty) = encodeTy ty
+encodeTy (isStandardTy -> True) = fail "Already a standard type"
+encodeTy (TyConApp (tyConDataCons -> cons) tcTys) | not (null cons) =
+  do eitherTC <- findTyConT "Data.Either.Either"
+     let eitherTy a b = TyConApp eitherTC [a,b]
+     return (foldl1 eitherTy (encodeCon tcTys <$> cons))
+encodeTy _ = fail "encodeTy: not handled"
 
 -- Not a function and not a forall
 groundType :: Type -> Bool
@@ -206,25 +243,13 @@ reConstruct = acceptGroundTyped >>>
                  decodeEncodeR
 
 -- TODO: Eta-expand as necessary
--- TODO: After I fix encodedTy, maybe drop some guards in reConstruct.
+-- TODO: After I fix encodeTy, maybe drop some guards in reConstruct.
 
 isBoxyDC :: DataCon -> Bool
 isBoxyDC = isSuffixOf "#" . uqName . dataConName
 
--- Find a data ctor for the given Id and all of the ctors for its type
-idDataCons :: Id -> Maybe (DataCon,[DataCon])
-idDataCons x | isId x = dataCons (idDetails x)
- where
-   dataCons :: IdDetails -> Maybe (DataCon,[DataCon])
-   dataCons (DataConWorkId con) =
-     (con,) <$> tyConDataCons_maybe (dataConTyCon con)
-   dataCons _                   = Nothing
-idDataCons _ = Nothing
-
--- idIsCtor :: Id -> Bool
--- idIsCtor = isJust . idDataCons
-
--- detailsIsCtor (DataConWrapId _) = True
+dcAllCons :: DataCon -> [DataCon]
+dcAllCons = tyConDataCons . dataConTyCon
 
 {--------------------------------------------------------------------
     Plugin
