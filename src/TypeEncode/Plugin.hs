@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds, FlexibleContexts #-}
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ViewPatterns, TupleSections #-}
 {-# OPTIONS_GHC -Wall #-}
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
@@ -28,22 +28,27 @@ import Control.Category (Category(..))
 import Data.Functor ((<$>))
 import Control.Monad ((<=<),liftM)
 import Control.Arrow (arr,(>>>))
-import Data.List (intercalate)
+import Data.List (intercalate,isSuffixOf)
+import Data.Maybe (isJust)
 import Text.Printf (printf)
+
+-- GHC
 
 import HERMIT.Monad (newIdH,HermitM)
 import HERMIT.Context (BoundVars,HasGlobalRdrEnv(..),HermitC)
 import HERMIT.Core (Crumb(..),localFreeIdsExpr,CoreProg(..),bindsToProg,progToBinds)
-import HERMIT.External (External,external,ExternalName,ExternalHelp)
-import HERMIT.GHC hiding (mkStringExpr)
-import HERMIT.Kure hiding (apply)
 -- Note that HERMIT.Dictionary re-exports HERMIT.Dictionary.*
 import HERMIT.Dictionary
   ( observeR,findIdT,callNameT
-  , rulesR,inlineR,inlineNamesR,simplifyR,letFloatLetR,letFloatTopR,letElimR,cleanupUnfoldR
+  , rulesR,inlineR,inlineNamesR,simplifyR
+  , letFloatLetR,letFloatTopR,letElimR,cleanupUnfoldR
   , etaExpandR, betaReduceR, letNonRecSubstSafeR
+  , callDataConT, callSaturatedT
   -- , unshadowR   -- May need this one later
   )
+import HERMIT.External (External,external,ExternalName,ExternalHelp)
+import HERMIT.GHC hiding (mkStringExpr)
+import HERMIT.Kure hiding (apply)
 import HERMIT.Plugin (hermitPlugin,phase,interactive)
 
 import TypeEncode.Encode (encode,decode)
@@ -90,6 +95,14 @@ tyNumArgs _                      = 0
 
 uqVarName :: Var -> String
 uqVarName = uqName . varName
+
+exprType' :: CoreExpr -> Type
+exprType' (Type {}) = error "exprType': given a Type"
+exprType' e = exprType e
+
+isType :: CoreExpr -> Bool
+isType (Type {}) = True
+isType _         = False
 
 {--------------------------------------------------------------------
     HERMIT utilities
@@ -147,17 +160,19 @@ decodeR ty ty' = idR >>= decodeOf ty ty'
 
 -- e --> decode (encode e)
 decodeEncodeR :: ReExpr
-decodeEncodeR = do ty  <- exprType <$> idR
+decodeEncodeR = do e   <- idR
+                   guardMsg (not (isType e)) "Given a Type expression"
+                   let ty = exprType' e
                    ty' <- encodedTy ty
                    decodeR ty ty' . encodeR ty ty'
 
 -- encode u --> u
 unEncode :: ReExpr
-unEncode = do (_encodeE, [Type _, arg]) <- callNameEnc "encode"
+unEncode = do (_encode, [Type _, arg]) <- callNameEnc "encode"
               return arg
 -- decode e --> e
 unDecode :: ReExpr
-unDecode = do (_decodeE, [Type _, body]) <- callNameEnc "decode"
+unDecode = do (_decode, [Type _, body]) <- callNameEnc "decode"
               return body
 
 -- encode (decode e) --> e
@@ -170,28 +185,46 @@ encodedTy ty = return (FunTy unitTy ty)
 
 -- encodedTy = error "encodedTy: not implemented"
 
+-- Not a function and not a forall
+groundType :: Type -> Bool
+groundType (coreView -> Just ty) = groundType ty
+groundType (FunTy {})            = False
+groundType (ForAllTy {})         = False
+groundType _                     = True
+
+acceptGroundTyped :: ReExpr
+acceptGroundTyped = 
+  acceptWithFailMsgR (not . isType)           "Given a Type" >>>
+  acceptWithFailMsgR (groundType . exprType') "Not ground"
+              
 -- | Rewrite a constructor application, eta-expanding if necessary.
 -- Must be saturated with type and value arguments.
-reCtor :: ReExpr
-reCtor = do e@(collectArgs -> (v@(Var (idIsCtor -> True)), args)) <- idR
-            guardMsg (length args == tyNumArgs (exprType v)) "Unsaturated"
-            guardMsg (not (isIntTy (exprType e))) "Int"
-            decodeEncodeR
-
-isIntTy :: Type -> Bool
-isIntTy (TyConApp tc []) = tc == intTyCon
-isIntTy _ = False
-
-idIsCtor :: Id -> Bool
-idIsCtor x = isId x && detailsIsCtor (idDetails x)
- where
-   detailsIsCtor :: IdDetails -> Bool
-   -- detailsIsCtor (DataConWrapId _) = True
-   detailsIsCtor (DataConWorkId _) = True  -- Fires for :, []
-   detailsIsCtor _ = False
+reConstruct :: ReExpr
+reConstruct = acceptGroundTyped >>>
+              do (dc, _tys, _args) <- callDataConT
+                 guardMsg (not (isBoxyDC dc)) "Boxed"
+                 decodeEncodeR
 
 -- TODO: Eta-expand as necessary
--- TODO: Maybe distinguish boxings, e.g., (I# 1).
+-- TODO: After I fix encodedTy, maybe drop some guards in reConstruct.
+
+isBoxyDC :: DataCon -> Bool
+isBoxyDC = isSuffixOf "#" . uqName . dataConName
+
+-- Find a data ctor for the given Id and all of the ctors for its type
+idDataCons :: Id -> Maybe (DataCon,[DataCon])
+idDataCons x | isId x = dataCons (idDetails x)
+ where
+   dataCons :: IdDetails -> Maybe (DataCon,[DataCon])
+   dataCons (DataConWorkId con) =
+     (con,) <$> tyConDataCons_maybe (dataConTyCon con)
+   dataCons _                   = Nothing
+idDataCons _ = Nothing
+
+-- idIsCtor :: Id -> Bool
+-- idIsCtor = isJust . idDataCons
+
+-- detailsIsCtor (DataConWrapId _) = True
 
 {--------------------------------------------------------------------
     Plugin
@@ -207,5 +240,5 @@ externC name rew help = external name (promoteR rew :: ReCore) [help]
 externals :: [External]
 externals =
   [ externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
-  , externC "re-ctor" reCtor "v --> decode (encode v)"
+  , externC "re-construct" reConstruct "v --> decode (encode v)"
   ]
