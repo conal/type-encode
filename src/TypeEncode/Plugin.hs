@@ -274,44 +274,47 @@ isBoolTy :: Type -> Bool
 isBoolTy (TyConApp tc []) = tc == boolTyCon
 isBoolTy _                = False
 
--- Do I want to encode Bool? For now, no.
-
 mkEither :: TranslateU (Binop Type)
 mkEither = tcFind2 "Data.Either.Either"
+
+mkVoid :: TranslateU Type
+mkVoid = tcFind0 "TypeEncode.Encode.Void"
 
 isStandardTy :: Type -> Bool
 isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 
-encodeCon :: [Type] -> DataCon -> Type
-encodeCon tcTys con | null argTys = unitTy
-                    | otherwise   = foldT pairTy (toTree argTys)
+-- To encode Bool also, remove isBoolTy from isStandardTy.
+
+encodeDC :: [Type] -> DataCon -> Type
+encodeDC tcTys con | null argTys = unitTy
+                   | otherwise   = foldT pairTy (toTree argTys)
  where
    (tvs,body) = splitForAllTys (dataConRepType con)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
 
-encodeCons :: [Type] -> [DataCon] -> TranslateU Type
-encodeCons _ [] =
-  do voidTC <- findTyConT "TypeEncode.Encode.Void"
-     return (TyConApp voidTC [])
-encodeCons tcTys cons =
-  do eitherTC <- findTyConT "Data.Either.Either"
-     let eitherTy a b = TyConApp eitherTC [a,b]
-     return (foldT eitherTy (encodeCon tcTys <$> toTree cons))
+ctorTree :: [Type] -> [DataCon] -> Tree Type
+ctorTree _     []   = error "ctorTree: no constructors"
+ctorTree tcTys cons = encodeDC tcTys <$> toTree cons
+
+encodeDCs :: [Type] -> [DataCon] -> TranslateU Type
+encodeDCs _     []   = mkVoid
+encodeDCs tcTys cons =
+  (\ eitherTy -> foldT eitherTy (ctorTree tcTys cons)) <$> mkEither
 
 encodeTy :: Type -> TranslateU Type
 encodeTy (coreView -> Just ty)                    = encodeTy ty
 encodeTy (isStandardTy -> True)                   = fail "Already a standard type"
-encodeTy (TyConApp (tyConDataCons -> cons) tcTys) = encodeCons tcTys cons
+encodeTy (TyConApp (tyConDataCons -> cons) tcTys) = encodeDCs tcTys cons
 encodeTy _                                        = fail "encodeTy: not handled"
 
 #if 0
 -- encode (C a ... z) --> ...
-encodeConApp :: ReExpr
-encodeConApp = unEncode
-           >>> accepterR (arr (not . isType)) >>> callDataConT
-           >>> arr (\ (dc, tys, args) ->
-                      findCon dc tys args
-                        (tyConDataCons (dataConOrigTyCon dc)))
+encodeDCApp :: ReExpr
+encodeDCApp = unEncode
+          >>> accepterR (arr (not . isType)) >>> callDataConT
+          >>> arr (\ (dc, tys, args) ->
+                     findCon dc tys args
+                       (tyConDataCons (dataConOrigTyCon dc)))
 
 findCon :: DataCon -> [Type] -> [CoreExpr] -> [DataCon] -> CoreExpr
 
@@ -324,7 +327,7 @@ findCon dc tys args =
    find (Branch l r) =
      (foo <$> find l) `mplus` (bar <$> find r)
 
--- TODO: Combine reConstruct and encodeConApp dropping the unEncode', and adding
+-- TODO: Combine reConstruct and encodeDCApp dropping the unEncode', and adding
 -- a decodeR.
 #endif
 
