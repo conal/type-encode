@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds, FlexibleContexts #-}
+{-# LANGUAGE TypeOperators, Rank2Types, ConstraintKinds, FlexibleContexts, CPP #-}
 {-# LANGUAGE ViewPatterns, TupleSections #-}
 {-# LANGUAGE DeriveFunctor, DeriveFoldable #-}
 {-# OPTIONS_GHC -Wall #-}
@@ -29,10 +29,10 @@ import Control.Category (Category(..))
 import Data.Monoid (Monoid(..))
 import Data.Functor ((<$>))
 import Data.Foldable (Foldable(..))
-import Control.Monad ((<=<),liftM)
-import Control.Arrow (arr,(>>>))
+import Control.Monad ((<=<))
+import Control.Arrow (arr,(>>>),second)
 import Data.List (intercalate,isSuffixOf)
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe,isJust)
 import Text.Printf (printf)
 
 -- GHC
@@ -130,7 +130,7 @@ tyArity :: Id -> Int
 tyArity = length . fst . splitForAllTys . varType
 
 apps' :: String -> [Type] -> [CoreExpr] -> TranslateU CoreExpr
-apps' s ts es = (\ i -> apps i ts es) `liftM` findIdT s
+apps' s ts es = (\ i -> apps i ts es) <$> findIdT s
 
 tyNumArgs :: Type -> Int
 tyNumArgs (FunTy    _ ty')       = 1 + tyNumArgs ty'
@@ -152,6 +152,15 @@ isType _         = False
 pairTy :: Binop Type
 pairTy a b = mkBoxedTupleTy [a,b]
 
+tcApp0 :: TyCon -> Type
+tcApp0 tc = TyConApp tc []
+
+tcApp1 :: TyCon -> Unop Type
+tcApp1 tc a = TyConApp tc [a]
+
+tcApp2 :: TyCon -> Binop Type
+tcApp2 tc a b = TyConApp tc [a,b]
+
 {--------------------------------------------------------------------
     HERMIT utilities
 --------------------------------------------------------------------}
@@ -161,7 +170,8 @@ type ReCore = RewriteH Core
 
 -- Common context & monad constraints
 type OkCM c m =
-  (HasDynFlags m, MonadThings m, MonadCatch m, BoundVars c, HasGlobalRdrEnv c)
+  ( HasDynFlags m, Functor m, MonadThings m, MonadCatch m
+  , BoundVars c, HasGlobalRdrEnv c )
 
 type TranslateU b = forall c m a. OkCM c m => Translate c m a b
 
@@ -180,6 +190,18 @@ findTyConMG nm c =
                 fail $ show (length ns) 
                      ++ " matches found: "
                      ++ intercalate ", " (showPpr dynFlags <$> ns)
+
+tcFind :: (TyCon -> b) -> String -> TranslateU b
+tcFind h = fmap h . findTyConT
+
+tcFind0 :: String -> TranslateU Type
+tcFind0 = tcFind tcApp0
+
+tcFind1 :: String -> TranslateU (Unop Type)
+tcFind1 = tcFind tcApp1
+
+tcFind2 :: String -> TranslateU (Binop Type)
+tcFind2 = tcFind tcApp2
 
 {--------------------------------------------------------------------
     Rewrites
@@ -214,14 +236,23 @@ decodeEncodeR = do e   <- idR
                    ty' <- encodeTy ty
                    decodeR ty ty' . encodeR ty ty'
 
--- encode u --> u
+-- encode @a @b u --> ((a,b),u) (with type arguments)
+unEncode' :: TranslateH CoreExpr ((Type,Type),CoreExpr)
+unEncode' = do (_encode, [Type a, Type b, arg]) <- callNameEnc "encode"
+               return ((a,b),arg)
+
+-- decode @a @b u --> ((a,b),u) (with type arguments)
+unDecode' :: TranslateH CoreExpr ((Type,Type),CoreExpr)
+unDecode' = do (_decode, [Type a, Type b, arg]) <- callNameEnc "decode"
+               return ((a,b),arg)
+
+-- encode u --> u (without type arguments)
 unEncode :: ReExpr
-unEncode = do (_encode, [Type _, arg]) <- callNameEnc "encode"
-              return arg
--- decode e --> e
+unEncode = snd <$> unEncode'
+
+-- decode e --> e (without type arguments)
 unDecode :: ReExpr
-unDecode = do (_decode, [Type _, body]) <- callNameEnc "decode"
-              return body
+unDecode = snd <$> unDecode'
 
 -- encode (decode e) --> e
 unEncodeDecode :: ReExpr
@@ -245,6 +276,9 @@ isBoolTy _                = False
 
 -- Do I want to encode Bool? For now, no.
 
+mkEither :: TranslateU (Binop Type)
+mkEither = tcFind2 "Data.Either.Either"
+
 isStandardTy :: Type -> Bool
 isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 
@@ -264,13 +298,35 @@ encodeCons tcTys cons =
      let eitherTy a b = TyConApp eitherTC [a,b]
      return (foldT eitherTy (encodeCon tcTys <$> toTree cons))
 
--- TODO: Handle no-constructor case as Void type.
-
 encodeTy :: Type -> TranslateU Type
-encodeTy (coreView   -> Just ty)                  = encodeTy ty
+encodeTy (coreView -> Just ty)                    = encodeTy ty
 encodeTy (isStandardTy -> True)                   = fail "Already a standard type"
 encodeTy (TyConApp (tyConDataCons -> cons) tcTys) = encodeCons tcTys cons
 encodeTy _                                        = fail "encodeTy: not handled"
+
+#if 0
+-- encode (C a ... z) --> ...
+encodeConApp :: ReExpr
+encodeConApp = unEncode
+           >>> accepterR (arr (not . isType)) >>> callDataConT
+           >>> arr (\ (dc, tys, args) ->
+                      findCon dc tys args
+                        (tyConDataCons (dataConOrigTyCon dc)))
+
+findCon :: DataCon -> [Type] -> [CoreExpr] -> [DataCon] -> CoreExpr
+
+findCon dc tys args =
+  fromMaybe (error "findCon: Didn't find data con") . find . toTree
+ where
+   find :: Tree DataCon -> Maybe CoreExpr
+   find (Leaf dc') | dc == dc' = return undefined
+                   | otherwise = Nothing
+   find (Branch l r) =
+     (foo <$> find l) `mplus` (bar <$> find r)
+
+-- TODO: Combine reConstruct and encodeConApp dropping the unEncode', and adding
+-- a decodeR.
+#endif
 
 -- Not a function and not a forall
 groundType :: Type -> Bool
