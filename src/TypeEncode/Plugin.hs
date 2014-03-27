@@ -84,12 +84,15 @@ toTree xs = Branch (toTree l) (toTree r)
  where
    (l,r) = splitAt (length xs `div` 2) xs
 
-foldT :: a -> Binop a -> Tree a -> a
-foldT e (#) = h
+foldMapT :: b -> (a -> b) -> Binop b -> Tree a -> b
+foldMapT e l b = h
  where
    h Empty        = e
-   h (Leaf a)     = a
-   h (Branch u v) = h u # h v
+   h (Leaf a)     = l a
+   h (Branch u v) = b (h u) (h v)
+
+foldT :: a -> Binop a -> Tree a -> a
+foldT e b = foldMapT e id b
 
 #if 0
 
@@ -345,23 +348,18 @@ findCon =
      lft             <- mkLeft
      rht             <- mkRight
      let find :: Tree DataCon -> (Type,Maybe CoreExpr)
-         find Empty = (voidTy,Nothing)
-         find (Leaf dc') | dc == dc' = (ty, Just inside)
-                         | otherwise = (ty, Nothing)
+         find = foldMapT e l b
           where
-            ty = encodeDC tys dc'
-         find (Branch l r) =
-           (eitherTy tl tr, (lft tl tr <$> mbl) `mplus` (rht tl tr <$> mbr))
-          where
-            (tl,mbl) = find l
-            (tr,mbr) = find r
-         -- TODO: find as foldT.
+            e = (voidTy,Nothing)
+            l dc' | dc == dc' = (ty, Just inside)
+                  | otherwise = (ty, Nothing)
+              where
+                ty = encodeDC tys dc'
+            b (tl,mbl) (tr,mbr) =
+              (eitherTy tl tr, (lft tl tr <$> mbl) `mplus` (rht tl tr <$> mbr))
      return $
        fromMaybe (error "findCon: Didn't find data con") $ snd $
          find (toTree (tyConDataCons (dataConOrigTyCon dc)))
-
--- TODO: Combine reConstruct and encodeDCApp dropping the unEncode', and adding
--- a decodeR.
 
 -- Not a function and not a forall
 groundType :: Type -> Bool
