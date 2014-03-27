@@ -273,6 +273,14 @@ encodeR ty ty' = idR >>= encodeOf ty ty'
 decodeR :: Type -> Type -> ReExpr
 decodeR ty ty' = idR >>= decodeOf ty ty'
 
+standardTy :: Type -> Bool
+standardTy (coreView -> Just ty) = standardTy ty
+standardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
+
+#if 0
+
+-- Old code. Remove after handling 'case' expressions.
+
 -- e --> decode (encode e)
 decodeEncodeR :: ReExpr
 decodeEncodeR = do e <- idR
@@ -281,6 +289,24 @@ decodeEncodeR = do e <- idR
                    ty' <- encodeTy ty
                    decodeR ty ty' . encodeR ty ty'
 -- TODO: Drop decodeEncodeR
+
+encodeTy :: Type -> TranslateU Type
+encodeTy (coreView -> Just ty) = encodeTy ty
+encodeTy (standardTy -> True)  = fail "Already a standard type"
+encodeTy (TyConApp tc tcTys)   = do enc <- mkEncodeDCs
+                                    return (enc tcTys (tcCons tc))
+encodeTy _                     = fail "encodeTy: not handled"
+
+type EncodeDCsT = [Type] -> Tree DataCon -> Type
+
+mkEncodeDCs :: TranslateU EncodeDCsT
+mkEncodeDCs = liftM2 encodeDCs mkVoidTy mkEither
+
+encodeDCs :: Type -> Binop Type -> EncodeDCsT
+encodeDCs voidTy eitherTy tcTys dcs =
+  foldT voidTy eitherTy (encodeDC tcTys <$> dcs)
+
+#endif
 
 -- encode @a @b u --> ((a,b),u) (with type arguments)
 unEncode' :: TranslateH CoreExpr ((Type,Type),CoreExpr)
@@ -304,9 +330,6 @@ unDecode = snd <$> unDecode'
 unEncodeDecode :: ReExpr
 unEncodeDecode = unEncode >>> unDecode
 
-standardTy :: Type -> Bool
-standardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
-
 -- To encode Bool also, remove isBoolTy from standardTy.
 
 tcCons :: TyCon -> Tree DataCon
@@ -317,22 +340,6 @@ encodeDC tcTys dc = foldT unitTy pairTy (toTree argTys)
  where
    (tvs,body) = splitForAllTys (dataConRepType dc)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
-
-type EncodeDCsT = [Type] -> Tree DataCon -> Type
-
-mkEncodeDCs :: TranslateU EncodeDCsT
-mkEncodeDCs = liftM2 encodeDCs mkVoidTy mkEither
-
-encodeDCs :: Type -> Binop Type -> EncodeDCsT
-encodeDCs voidTy eitherTy tcTys dcs =
-  foldT voidTy eitherTy (encodeDC tcTys <$> dcs)
-
-encodeTy :: Type -> TranslateU Type
-encodeTy (coreView -> Just ty) = encodeTy ty
-encodeTy (standardTy -> True)  = fail "Already a standard type"
-encodeTy (TyConApp tc tcTys)   = do enc <- mkEncodeDCs
-                                    return (enc tcTys (tcCons tc))
-encodeTy _                     = fail "encodeTy: not handled"
 
 findCon :: TranslateH (DataCon, [Type], [CoreExpr]) (Type,CoreExpr)
 findCon =
@@ -347,10 +354,8 @@ findCon =
          find = foldMapT e l b
           where
             e = (voidTy,Nothing)
-            l dc' | dc == dc' = (ty, Just inside)
-                  | otherwise = (ty, Nothing)
-              where
-                ty = encodeDC tys dc'
+            l dc' = ( encodeDC tys dc'
+                    , if dc == dc' then Just inside else Nothing )
             b (tl,mbl) (tr,mbr) =
               (eitherTy tl tr, (lft tl tr <$> mbl) `mplus` (rht tl tr <$> mbr))
      return $
@@ -367,8 +372,9 @@ groundType _                     = True
 acceptGroundTyped :: ReExpr
 acceptGroundTyped = 
   acceptWithFailMsgR (not . isType)           "Given a Type" >>>
-  acceptWithFailMsgR (groundType . exprType') "Not ground"
-              
+  acceptWithFailMsgR (groundType . exprType') "Not ground"   >>>
+  acceptWithFailMsgR (not . standardTy . exprType') "standard type"
+
 -- | Rewrite a constructor application, eta-expanding if necessary.
 -- Must be saturated with type and value arguments.
 reConstruct :: ReExpr
@@ -398,7 +404,7 @@ externC name rew help = external name (promoteR rew :: ReCore) [help]
 
 externals :: [External]
 externals =
-  [ externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
-  , externC "un-encode-decode" unEncodeDecode "encode (decode e) -> e"
+  [ externC "un-encode-decode" unEncodeDecode "encode (decode e) -> e"
   , externC "re-construct" reConstruct "encode constructor application"
+  -- , externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
   ]
