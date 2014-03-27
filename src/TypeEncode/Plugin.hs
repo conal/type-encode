@@ -29,8 +29,8 @@ import Control.Category (Category(..))
 import Data.Monoid (Monoid(..))
 import Data.Functor ((<$>))
 import Data.Foldable (Foldable(..))
-import Control.Monad ((<=<),liftM2)
-import Control.Arrow (arr,(>>>),second,(&&&))
+import Control.Monad ((<=<),liftM2,mplus)
+import Control.Arrow (Arrow(..),(>>>))
 import Data.List (intercalate,isSuffixOf)
 import Data.Maybe (fromMaybe,isJust)
 import Text.Printf (printf)
@@ -162,6 +162,22 @@ tcApp1 tc a = TyConApp tc [a]
 tcApp2 :: TyCon -> Binop Type
 tcApp2 tc a b = TyConApp tc [a,b]
 
+isPairTy :: Type -> Bool
+isPairTy (TyConApp tc [_,_]) = isBoxedTupleTyCon tc
+isPairTy _                   = False
+
+isEitherTy :: Type -> Bool
+isEitherTy (TyConApp tc [_,_]) = tyConName tc == eitherTyConName
+isEitherTy _                   = False
+
+isUnitTy :: Type -> Bool
+isUnitTy (TyConApp tc []) = tc == unitTyCon
+isUnitTy _                = False
+
+isBoolTy :: Type -> Bool
+isBoolTy (TyConApp tc []) = tc == boolTyCon
+isBoolTy _                = False
+
 {--------------------------------------------------------------------
     HERMIT utilities
 --------------------------------------------------------------------}
@@ -180,7 +196,7 @@ type TranslateU b = forall c m a. OkCM c m => Translate c m a b
 -- reader environment.
 findTyConT :: String -> TranslateU TyCon
 findTyConT nm =
-  prefixFailMsg ("Cannot resolve name " ++ nm ++ ", ") $
+  prefixFailMsg ("Cannot resolve name " ++ nm ++ "; ") $
   contextonlyT (findTyConMG nm)
 
 findTyConMG :: OkCM c m => String -> c -> m TyCon
@@ -203,6 +219,38 @@ tcFind1 = tcFind tcApp1
 
 tcFind2 :: String -> TranslateU (Binop Type)
 tcFind2 = tcFind tcApp2
+
+mkVoid :: TranslateU CoreExpr
+mkVoid = Var <$> findIdT "TypeEncode.Encode.void"
+
+mkUnit :: TranslateU CoreExpr
+mkUnit = return (mkCoreTup [])
+
+mkPair :: TranslateU (Binop CoreExpr)
+mkPair = return $ \ u v  -> mkCoreTup [u,v]
+
+mkPairTree :: TranslateU ([CoreExpr] -> CoreExpr)
+mkPairTree = do unit <- mkUnit
+                pair <- mkPair
+                return (foldT unit pair . toTree)
+
+-- TODO: mkUnit, mkPair, mkPairTree needn't be in TranslateU
+
+mkLR :: String -> TranslateU (Type -> Type -> Unop CoreExpr)
+mkLR name = do f <- findIdT name
+               return $ \ tu tv a -> apps f [tu,tv] [a]
+
+mkLeft  :: TranslateU (Type -> Type -> Unop CoreExpr)
+mkLeft  = mkLR "Left"
+
+mkRight :: TranslateU (Type -> Type -> Unop CoreExpr)
+mkRight = mkLR "Right"
+
+mkEither :: TranslateU (Binop Type)
+mkEither = tcFind2 "Data.Either.Either"
+
+mkVoidTy :: TranslateU Type
+mkVoidTy = tcFind0 "TypeEncode.Encode.Void"
 
 {--------------------------------------------------------------------
     Rewrites
@@ -259,28 +307,6 @@ unDecode = snd <$> unDecode'
 unEncodeDecode :: ReExpr
 unEncodeDecode = unEncode >>> unDecode
 
-isPairTy :: Type -> Bool
-isPairTy (TyConApp tc [_,_]) = isBoxedTupleTyCon tc
-isPairTy _                   = False
-
-isEitherTy :: Type -> Bool
-isEitherTy (TyConApp tc [_,_]) = tyConName tc == eitherTyConName
-isEitherTy _                   = False
-
-isUnitTy :: Type -> Bool
-isUnitTy (TyConApp tc []) = tc == unitTyCon
-isUnitTy _                = False
-
-isBoolTy :: Type -> Bool
-isBoolTy (TyConApp tc []) = tc == boolTyCon
-isBoolTy _                = False
-
-mkEither :: TranslateU (Binop Type)
-mkEither = tcFind2 "Data.Either.Either"
-
-mkVoid :: TranslateU Type
-mkVoid = tcFind0 "TypeEncode.Encode.Void"
-
 isStandardTy :: Type -> Bool
 isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 
@@ -292,65 +318,49 @@ encodeDC tcTys dc = foldT unitTy pairTy (toTree argTys)
    (tvs,body) = splitForAllTys (dataConRepType dc)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
 
-dcTree :: [Type] -> [DataCon] -> Tree Type
-dcTree _     []  = error "dcTree: no constructors"
-dcTree tcTys dcs = encodeDC tcTys <$> toTree dcs
-
-type EncodeDCsT = [Type] -> [DataCon] -> Type
+type EncodeDCsT = [Type] -> Tree DataCon -> Type
 
 mkEncodeDCs :: TranslateU EncodeDCsT
-mkEncodeDCs = liftM2 encodeDCs mkVoid mkEither
+mkEncodeDCs = liftM2 encodeDCs mkVoidTy mkEither
 
 encodeDCs :: Type -> Binop Type -> EncodeDCsT
 encodeDCs voidTy eitherTy tcTys dcs =
-  foldT voidTy eitherTy (dcTree tcTys dcs)
+  foldT voidTy eitherTy (encodeDC tcTys <$> dcs)
 
 encodeTy :: Type -> TranslateU Type
 encodeTy (coreView -> Just ty)                   = encodeTy ty
 encodeTy (isStandardTy -> True)                  = fail "Already a standard type"
-encodeTy (TyConApp (tyConDataCons -> dcs) tcTys) = do enc <- mkEncodeDCs
-                                                      return (enc tcTys dcs)
+encodeTy (TyConApp tc tcTys) =
+  do enc <- mkEncodeDCs
+     return (enc tcTys (toTree (tyConDataCons tc)))
 encodeTy _                                       = fail "encodeTy: not handled"
 
--- encode (C a ... z) --> ...
-encodeDCApp :: ReExpr
-encodeDCApp = unEncode
-          >>> accepterR (arr (not . isType)) >>> callDataConT
-          >>> findCon
-
--- TODO: callDataConT appears not to work for a newtype constructor.
--- Investigate.
-
 findCon :: TranslateH (DataCon, [Type], [CoreExpr]) CoreExpr
-
-#if 1
-
-findCon = undefined
-
-#else
-
 findCon =
   do (dc, tys, args) <- idR
-     enc <- mkEncodeDCs
-     let find :: Tree (DataCon,Type) -> Maybe CoreExpr
-         find (Leaf (dc',ty)) | dc == dc' =
-           
-           return ty
-                              | otherwise = Nothing
-         find (Branch l r) =
-           (foo <$> find l) `mplus` (bar <$> find r)
-
-         dcs = tyConDataCons (dataConOrigTyCon dc)
+     inside          <- ($ args) <$> mkPairTree
+     enc             <- ($ tys ) <$> mkEncodeDCs
+     lft             <- mkLeft
+     rht             <- mkRight
+     let find :: Tree DataCon -> Maybe CoreExpr
+         find Empty = Nothing
+         find (Leaf dc') | dc == dc' = Just inside
+                         | otherwise = Nothing
+         find (Branch l r) = (lft tl tr <$> find l) `mplus` (rht tl tr <$> find r)
+          where
+            tl = enc l
+            tr = enc r
+         -- TODO: find as foldT.
+         -- TODO: Avoid repeated enc traversals.
+         -- Do I need a different kind of tree, with another value at each node?
+         -- Instead, try
+         --   find :: Tree DataCon -> (Type, Maybe CoreExpr)
      return $
        fromMaybe (error "findCon: Didn't find data con") $
-         find ((id &&& encodeDC tys) <$> toTree dcs)
-
--- TODO: replace mkEncodeDCs with something that takes a tree of types.
+         find (toTree (tyConDataCons (dataConOrigTyCon dc)))
 
 -- TODO: Combine reConstruct and encodeDCApp dropping the unEncode', and adding
 -- a decodeR.
-
-#endif
 
 -- Not a function and not a forall
 groundType :: Type -> Bool
@@ -367,10 +377,27 @@ acceptGroundTyped =
 -- | Rewrite a constructor application, eta-expanding if necessary.
 -- Must be saturated with type and value arguments.
 reConstruct :: ReExpr
-reConstruct = acceptGroundTyped >>>
-              do (dc, _tys, _args) <- callDataConT
-                 guardMsg (not (isBoxyDC dc)) "Boxed"
-                 decodeEncodeR
+reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
+ where
+   encodeCon :: ReExpr
+   encodeCon = acceptGroundTyped
+           >>> accepterR (arr (not . isType))
+           >>> callDataConT
+           >>> findCon
+   decodeCon :: TranslateH (Type,CoreExpr) CoreExpr
+   decodeCon = do (ty,e) <- idR
+                  decodeOf ty (exprType' e) e
+
+-- decodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
+
+
+-- TODO: callDataConT appears not to work for a newtype constructor.
+-- Investigate.
+
+-- reConstruct = acceptGroundTyped >>>
+--               do (dc, _tys, _args) <- callDataConT
+--                  guardMsg (not (isBoxyDC dc)) "Boxed"
+--                  decodeEncodeR
 
 -- TODO: Eta-expand as necessary
 -- TODO: After I fix encodeTy, maybe drop some guards in reConstruct.
