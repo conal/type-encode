@@ -371,26 +371,22 @@ groundType (FunTy {})            = False
 groundType (ForAllTy {})         = False
 groundType _                     = True
 
-acceptGroundTyped :: RewriteH (Type,CoreExpr)
-acceptGroundTyped = 
-  acceptWithFailMsgR (not .     isType . snd) "Given a Type"  >>>
-  acceptWithFailMsgR (      groundType . fst) "Not ground"    >>>
-  acceptWithFailMsgR (not . standardTy . fst) "standard type"
+acceptGroundTyped :: RewriteH Type
+acceptGroundTyped =
+  acceptWithFailMsgR (      groundType) "Not ground"    >>>
+  acceptWithFailMsgR (not . standardTy) "Already a standard type"
 
 -- | Rewrite a constructor application, eta-expanding if necessary.
 -- Must be saturated with type and value arguments.
 reConstruct :: ReExpr
-reConstruct = (arr exprType' &&& id) >>> encodeCon >>> decodeCon
+reConstruct = acceptWithFailMsgR (not . isType) "Given a Type"  >>>
+              (arr exprType' &&& id) >>> encodeCon >>> decodeCon
  where
    encodeCon :: TranslateH (Type,CoreExpr) (Type,(Type,CoreExpr))
-   encodeCon = acceptGroundTyped >>> second (callDataConT >>> findCon)
+   encodeCon = acceptGroundTyped *** (callDataConT >>> findCon)
    decodeCon :: TranslateH (Type,(Type,CoreExpr)) CoreExpr
    decodeCon = do (ty,(ty',e)) <- idR
                   decodeOf ty ty' e
-
--- Tricky point: if the expr given to reConstruct is Type t, then exprType' would fail.
--- In that case, the first acceptWithFailMsgR will bail before we can get an error.
--- TODO: Rewrite more simply.
 
 -- TODO: callDataConT appears not to work for a newtype constructor.
 -- Investigate.
