@@ -339,24 +339,24 @@ findCon :: TranslateH (DataCon, [Type], [CoreExpr]) CoreExpr
 findCon =
   do (dc, tys, args) <- idR
      inside          <- ($ args) <$> mkPairTree
-     enc             <- ($ tys ) <$> mkEncodeDCs
+     voidTy          <- mkVoidTy
+     eitherTy        <- mkEither
      lft             <- mkLeft
      rht             <- mkRight
-     let find :: Tree DataCon -> Maybe CoreExpr
-         find Empty = Nothing
-         find (Leaf dc') | dc == dc' = Just inside
-                         | otherwise = Nothing
-         find (Branch l r) = (lft tl tr <$> find l) `mplus` (rht tl tr <$> find r)
+     let find :: Tree DataCon -> (Type,Maybe CoreExpr)
+         find Empty = (voidTy,Nothing)
+         find (Leaf dc') | dc == dc' = (ty, Just inside)
+                         | otherwise = (ty, Nothing)
           where
-            tl = enc l
-            tr = enc r
+            ty = encodeDC tys dc'
+         find (Branch l r) =
+           (eitherTy tl tr, (lft tl tr <$> mbl) `mplus` (rht tl tr <$> mbr))
+          where
+            (tl,mbl) = find l
+            (tr,mbr) = find r
          -- TODO: find as foldT.
-         -- TODO: Avoid repeated enc traversals.
-         -- Do I need a different kind of tree, with another value at each node?
-         -- Instead, try
-         --   find :: Tree DataCon -> (Type, Maybe CoreExpr)
      return $
-       fromMaybe (error "findCon: Didn't find data con") $
+       fromMaybe (error "findCon: Didn't find data con") $ snd $
          find (toTree (tyConDataCons (dataConOrigTyCon dc)))
 
 -- TODO: Combine reConstruct and encodeDCApp dropping the unEncode', and adding
@@ -388,16 +388,8 @@ reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
    decodeCon = do (ty,e) <- idR
                   decodeOf ty (exprType' e) e
 
--- decodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
-
-
 -- TODO: callDataConT appears not to work for a newtype constructor.
 -- Investigate.
-
--- reConstruct = acceptGroundTyped >>>
---               do (dc, _tys, _args) <- callDataConT
---                  guardMsg (not (isBoxyDC dc)) "Boxed"
---                  decodeEncodeR
 
 -- TODO: Eta-expand as necessary
 -- TODO: After I fix encodeTy, maybe drop some guards in reConstruct.
