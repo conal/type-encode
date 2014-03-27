@@ -338,6 +338,7 @@ encodeTy _                                       = fail "encodeTy: not handled"
 findCon :: TranslateH (DataCon, [Type], [CoreExpr]) CoreExpr
 findCon =
   do (dc, tys, args) <- idR
+     guardMsg (not (dcUnboxedArg dc)) "Unboxed constructor argument"
      inside          <- ($ args) <$> mkPairTree
      voidTy          <- mkVoidTy
      eitherTy        <- mkEither
@@ -394,8 +395,8 @@ reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
 -- TODO: Eta-expand as necessary
 -- TODO: After I fix encodeTy, maybe drop some guards in reConstruct.
 
-isBoxyDC :: DataCon -> Bool
-isBoxyDC = isSuffixOf "#" . uqName . dataConName
+dcUnboxedArg :: DataCon -> Bool
+dcUnboxedArg = isSuffixOf "#" . uqName . dataConName
 
 dcAllCons :: DataCon -> [DataCon]
 dcAllCons = tyConDataCons . dataConTyCon
