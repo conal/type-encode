@@ -29,8 +29,8 @@ import Control.Category (Category(..))
 import Data.Monoid (Monoid(..))
 import Data.Functor ((<$>))
 import Data.Foldable (Foldable(..))
-import Control.Monad ((<=<))
-import Control.Arrow (arr,(>>>),second)
+import Control.Monad ((<=<),liftM2)
+import Control.Arrow (arr,(>>>),second,(&&&))
 import Data.List (intercalate,isSuffixOf)
 import Data.Maybe (fromMaybe,isJust)
 import Text.Printf (printf)
@@ -51,7 +51,7 @@ import HERMIT.Dictionary
   -- , unshadowR   -- May need this one later
   )
 import HERMIT.External (External,external,ExternalName,ExternalHelp)
-import HERMIT.GHC hiding (mkStringExpr)
+import HERMIT.GHC hiding (FastString(..))
 import HERMIT.Kure hiding (apply)
 import HERMIT.Plugin (hermitPlugin,phase,interactive)
 
@@ -286,49 +286,70 @@ isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 -- To encode Bool also, remove isBoolTy from isStandardTy.
 
 encodeDC :: [Type] -> DataCon -> Type
-encodeDC tcTys con | null argTys = unitTy
-                   | otherwise   = foldT pairTy (toTree argTys)
+encodeDC tcTys dc | null argTys = unitTy
+                  | otherwise   = foldT pairTy (toTree argTys)
  where
-   (tvs,body) = splitForAllTys (dataConRepType con)
+   (tvs,body) = splitForAllTys (dataConRepType dc)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
 
-ctorTree :: [Type] -> [DataCon] -> Tree Type
-ctorTree _     []   = error "ctorTree: no constructors"
-ctorTree tcTys cons = encodeDC tcTys <$> toTree cons
+dcTree :: [Type] -> [DataCon] -> Tree Type
+dcTree _     []  = error "dcTree: no constructors"
+dcTree tcTys dcs = encodeDC tcTys <$> toTree dcs
 
-encodeDCs :: [Type] -> [DataCon] -> TranslateU Type
-encodeDCs _     []   = mkVoid
-encodeDCs tcTys cons =
-  (\ eitherTy -> foldT eitherTy (ctorTree tcTys cons)) <$> mkEither
+type EncodeDCsT = [Type] -> [DataCon] -> Type
+
+mkEncodeDCs :: TranslateU EncodeDCsT
+mkEncodeDCs = liftM2 encodeDCs mkVoid mkEither
+
+encodeDCs :: Type -> Binop Type -> EncodeDCsT
+encodeDCs voidTy _   _     []  = voidTy
+encodeDCs _ eitherTy tcTys dcs = foldT eitherTy (dcTree tcTys dcs)
 
 encodeTy :: Type -> TranslateU Type
-encodeTy (coreView -> Just ty)                    = encodeTy ty
-encodeTy (isStandardTy -> True)                   = fail "Already a standard type"
-encodeTy (TyConApp (tyConDataCons -> cons) tcTys) = encodeDCs tcTys cons
-encodeTy _                                        = fail "encodeTy: not handled"
+encodeTy (coreView -> Just ty)                   = encodeTy ty
+encodeTy (isStandardTy -> True)                  = fail "Already a standard type"
+encodeTy (TyConApp (tyConDataCons -> dcs) tcTys) = do enc <- mkEncodeDCs
+                                                      return (enc tcTys dcs)
+encodeTy _                                       = fail "encodeTy: not handled"
 
-#if 0
 -- encode (C a ... z) --> ...
 encodeDCApp :: ReExpr
 encodeDCApp = unEncode
           >>> accepterR (arr (not . isType)) >>> callDataConT
-          >>> arr (\ (dc, tys, args) ->
-                     findCon dc tys args
-                       (tyConDataCons (dataConOrigTyCon dc)))
+          >>> findCon
 
-findCon :: DataCon -> [Type] -> [CoreExpr] -> [DataCon] -> CoreExpr
+-- TODO: callDataConT appears not to work for a newtype constructor.
+-- Investigate.
 
-findCon dc tys args =
-  fromMaybe (error "findCon: Didn't find data con") . find . toTree
- where
-   find :: Tree DataCon -> Maybe CoreExpr
-   find (Leaf dc') | dc == dc' = return undefined
-                   | otherwise = Nothing
-   find (Branch l r) =
-     (foo <$> find l) `mplus` (bar <$> find r)
+findCon :: TranslateH (DataCon, [Type], [CoreExpr]) CoreExpr
+
+#if 1
+
+findCon = undefined
+
+#else
+
+findCon =
+  do (dc, tys, args) <- idR
+     enc <- mkEncodeDCs
+     let find :: Tree (DataCon,Type) -> Maybe CoreExpr
+         find (Leaf (dc',ty)) | dc == dc' =
+           
+           return ty
+                              | otherwise = Nothing
+         find (Branch l r) =
+           (foo <$> find l) `mplus` (bar <$> find r)
+
+         dcs = tyConDataCons (dataConOrigTyCon dc)
+     return $
+       fromMaybe (error "findCon: Didn't find data con") $
+         find ((id &&& encodeDC tys) <$> toTree dcs)
+
+-- TODO: replace mkEncodeDCs with something that takes a tree of types.
 
 -- TODO: Combine reConstruct and encodeDCApp dropping the unEncode', and adding
 -- a decodeR.
+
 #endif
 
 -- Not a function and not a forall
