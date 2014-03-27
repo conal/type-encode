@@ -46,10 +46,10 @@ t4 = (3,4)
 t5 :: (Int,Int,Int,Int,Int)
 t5 = (3,4,5,6,7)
 
-data A = B Int | C Bool | Y Int | Z ()
+data A = B Int | C () Bool () Int | Y Int | Z ()
 
 t6 :: A
-t6 = B 3
+t6 = C () True () 3
 
 data D = D
 
