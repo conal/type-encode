@@ -1,9 +1,10 @@
 Name:               type-encode
-Version:            0.1.1
+Version:            0.1
 Cabal-Version:      >= 1.6
-Synopsis:           Convert lambda expressions to CCC combinators
-Category:           categories
-Description:        Convert lambda expressions to CCC combinators
+Synopsis:           A HERMIT-based GHC plugin that converts data types to sum-of-products form.
+                    Intended for use with lambda-ccc.
+Category:           Language
+Description:        A HERMIT-based GHC plugin that converts data types to sum-of-products form.
 Author:             Conal Elliott
 Maintainer:         conal@tabula.com
 Copyright:          (c) 2014 by Tabula, Inc
@@ -14,7 +15,7 @@ build-type:         Simple
 
 Extra-Source-Files:
                     test/Tests.hs
-                    test/Tests.hss
+                    test/Auto.hss
 
 source-repository head
   type:             git
