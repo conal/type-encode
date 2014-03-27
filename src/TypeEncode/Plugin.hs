@@ -341,6 +341,8 @@ encodeDC tcTys dc = foldT unitTy pairTy (toTree argTys)
    (tvs,body) = splitForAllTys (dataConRepType dc)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
 
+-- Given a constructor application of a "nonstandard", ground type, construct
+-- its sum-of-products encoding and the type of that encoding.
 findCon :: TranslateH (DataCon, [Type], [CoreExpr]) (Type,CoreExpr)
 findCon =
   do (dc, tys, args) <- idR
@@ -369,22 +371,26 @@ groundType (FunTy {})            = False
 groundType (ForAllTy {})         = False
 groundType _                     = True
 
-acceptGroundTyped :: ReExpr
+acceptGroundTyped :: RewriteH (Type,CoreExpr)
 acceptGroundTyped = 
-  acceptWithFailMsgR (not . isType)           "Given a Type" >>>
-  acceptWithFailMsgR (groundType . exprType') "Not ground"   >>>
-  acceptWithFailMsgR (not . standardTy . exprType') "standard type"
+  acceptWithFailMsgR (not .     isType . snd) "Given a Type"  >>>
+  acceptWithFailMsgR (      groundType . fst) "Not ground"    >>>
+  acceptWithFailMsgR (not . standardTy . fst) "standard type"
 
 -- | Rewrite a constructor application, eta-expanding if necessary.
 -- Must be saturated with type and value arguments.
 reConstruct :: ReExpr
-reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
+reConstruct = (arr exprType' &&& id) >>> encodeCon >>> decodeCon
  where
-   encodeCon :: TranslateH CoreExpr (Type,CoreExpr)
-   encodeCon = acceptGroundTyped >>> callDataConT >>> findCon
+   encodeCon :: TranslateH (Type,CoreExpr) (Type,(Type,CoreExpr))
+   encodeCon = acceptGroundTyped >>> second (callDataConT >>> findCon)
    decodeCon :: TranslateH (Type,(Type,CoreExpr)) CoreExpr
    decodeCon = do (ty,(ty',e)) <- idR
                   decodeOf ty ty' e
+
+-- Tricky point: if the expr given to reConstruct is Type t, then exprType' would fail.
+-- In that case, the first acceptWithFailMsgR will bail before we can get an error.
+-- TODO: Rewrite more simply.
 
 -- TODO: callDataConT appears not to work for a newtype constructor.
 -- Investigate.
