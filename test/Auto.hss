@@ -1,9 +1,11 @@
 set-pp-renderer ascii                   -- TODO: Can I set from command line?
 set-pp-type Show
 
-binding-of t1
-down
-decode-encode
+-- binding-of t7
+any-bu re-construct
 
--- any-td decode-encode
--- down                                    -- To definitions
+-- rhs-of t10
+-- re-construct
+
+-- -- any-td decode-encode
+down                                    -- To definitions
