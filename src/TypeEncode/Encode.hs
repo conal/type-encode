@@ -1,4 +1,4 @@
-{-# LANGUAGE ExplicitForAll #-}
+{-# LANGUAGE ExplicitForAll, EmptyDataDecls #-}
 {-# OPTIONS_GHC -Wall #-}
 
 -- {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
@@ -15,7 +15,7 @@
 -- Simple interface for encoding & decoding types.
 ----------------------------------------------------------------------
 
-module TypeEncode.Encode (encode,decode) where
+module TypeEncode.Encode (encode,decode,Void) where
 
 -- TODO: Maybe move encode & decode to a type class, after I know how to insert
 -- dictionaries. Or leave it alone.
@@ -29,3 +29,10 @@ decode = error "decode: not eliminated"
 {-# NOINLINE decode #-}
 
 -- The foralls here indicate the type argument order needed by the plugin.
+
+data Void
+
+-- TODO: Is there a standard version of Void somewhere convenient?
+
+-- void :: Void
+-- void = error "void"

@@ -220,8 +220,8 @@ tcFind1 = tcFind tcApp1
 tcFind2 :: String -> TranslateU (Binop Type)
 tcFind2 = tcFind tcApp2
 
-mkVoid :: TranslateU CoreExpr
-mkVoid = Var <$> findIdT "TypeEncode.Encode.void"
+-- mkVoid :: TranslateU CoreExpr
+-- mkVoid = Var <$> findIdT "TypeEncode.Encode.void"
 
 mkUnit :: TranslateU CoreExpr
 mkUnit = return (mkCoreTup [])
