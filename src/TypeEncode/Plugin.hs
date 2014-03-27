@@ -338,7 +338,7 @@ encodeTy (TyConApp tc tcTys) =
      return (enc tcTys (toTree (tyConDataCons tc)))
 encodeTy _                                       = fail "encodeTy: not handled"
 
-findCon :: TranslateH (DataCon, [Type], [CoreExpr]) CoreExpr
+findCon :: TranslateH (DataCon, [Type], [CoreExpr]) (Type,CoreExpr)
 findCon =
   do (dc, tys, args) <- idR
      guardMsg (not (dcUnboxedArg dc)) "Unboxed constructor argument"
@@ -358,7 +358,7 @@ findCon =
             b (tl,mbl) (tr,mbr) =
               (eitherTy tl tr, (lft tl tr <$> mbl) `mplus` (rht tl tr <$> mbr))
      return $
-       fromMaybe (error "findCon: Didn't find data con") $ snd $
+       second (fromMaybe (error "findCon: Didn't find data con")) $
          find (toTree (tyConDataCons (dataConOrigTyCon dc)))
 
 -- Not a function and not a forall
@@ -378,14 +378,14 @@ acceptGroundTyped =
 reConstruct :: ReExpr
 reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
  where
-   encodeCon :: ReExpr
+   encodeCon :: TranslateH CoreExpr (Type,CoreExpr)
    encodeCon = acceptGroundTyped
            >>> accepterR (arr (not . isType))
            >>> callDataConT
            >>> findCon
-   decodeCon :: TranslateH (Type,CoreExpr) CoreExpr
-   decodeCon = do (ty,e) <- idR
-                  decodeOf ty (exprType' e) e
+   decodeCon :: TranslateH (Type,(Type,CoreExpr)) CoreExpr
+   decodeCon = do (ty,(ty',e)) <- idR
+                  decodeOf ty ty' e
 
 -- TODO: callDataConT appears not to work for a newtype constructor.
 -- Investigate.
