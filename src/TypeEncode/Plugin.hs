@@ -74,19 +74,20 @@ infixl 1 <--
          (b `cat` b') -> (a' `cat` a) -> ((a `cat` b) -> (a' `cat` b'))
 (h <-- f) g = h . g . f
 
-data Tree a = Leaf a | Branch (Tree a) (Tree a)
+data Tree a = Empty | Leaf a | Branch (Tree a) (Tree a)
   deriving (Show,Functor,Foldable)
 
 toTree :: [a] -> Tree a
-toTree []  = error "toTree: empty list"
+toTree []  = Empty
 toTree [a] = Leaf a
 toTree xs = Branch (toTree l) (toTree r)
  where
    (l,r) = splitAt (length xs `div` 2) xs
 
-foldT :: Binop a -> Tree a -> a
-foldT (#) = h
+foldT :: a -> Binop a -> Tree a -> a
+foldT e (#) = h
  where
+   h Empty        = e
    h (Leaf a)     = a
    h (Branch u v) = h u # h v
 
@@ -286,8 +287,7 @@ isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 -- To encode Bool also, remove isBoolTy from isStandardTy.
 
 encodeDC :: [Type] -> DataCon -> Type
-encodeDC tcTys dc | null argTys = unitTy
-                  | otherwise   = foldT pairTy (toTree argTys)
+encodeDC tcTys dc = foldT unitTy pairTy (toTree argTys)
  where
    (tvs,body) = splitForAllTys (dataConRepType dc)
    argTys     = substTysWith tvs tcTys (fst (splitFunTys body))
@@ -302,8 +302,8 @@ mkEncodeDCs :: TranslateU EncodeDCsT
 mkEncodeDCs = liftM2 encodeDCs mkVoid mkEither
 
 encodeDCs :: Type -> Binop Type -> EncodeDCsT
-encodeDCs voidTy _   _     []  = voidTy
-encodeDCs _ eitherTy tcTys dcs = foldT eitherTy (dcTree tcTys dcs)
+encodeDCs voidTy eitherTy tcTys dcs =
+  foldT voidTy eitherTy (dcTree tcTys dcs)
 
 encodeTy :: Type -> TranslateU Type
 encodeTy (coreView -> Just ty)                   = encodeTy ty
