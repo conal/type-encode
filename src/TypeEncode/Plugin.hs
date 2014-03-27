@@ -67,20 +67,14 @@ type Unop a = a -> a
 -- | Binary transformation
 type Binop a = a -> Unop a
 
-infixl 1 <--
-
--- | Add post- and pre-processing
-(<--) :: Category cat =>
-         (b `cat` b') -> (a' `cat` a) -> ((a `cat` b) -> (a' `cat` b'))
-(h <-- f) g = h . g . f
-
+-- Binary leaf tree. Used to construct balanced nested sum and product types.
 data Tree a = Empty | Leaf a | Branch (Tree a) (Tree a)
   deriving (Show,Functor,Foldable)
 
 toTree :: [a] -> Tree a
 toTree []  = Empty
 toTree [a] = Leaf a
-toTree xs = Branch (toTree l) (toTree r)
+toTree xs  = Branch (toTree l) (toTree r)
  where
    (l,r) = splitAt (length xs `div` 2) xs
 
@@ -96,8 +90,8 @@ foldT e b = foldMapT e id b
 
 #if 0
 
--- I could almost use fold along with EitherTy and PairTy monoids, each
--- newtype-wrapping Type:
+-- I could almost use fold (from Data.Foldable) along with EitherTy and PairTy
+-- monoids, each newtype-wrapping Type:
 
 newtype PairTy = PairTy Type
 
@@ -113,6 +107,7 @@ instance Monoid EitherTy where
 
 -- Sadly, voidTy and eitherTy require looking up names. I'm tempted to use
 -- unsafePerformIO to give pure interfaces to all of these lookups.
+-- However, I don't know how, since I'm using TranslateU rather than IO.
 
 #endif
 
@@ -120,6 +115,7 @@ instance Monoid EitherTy where
     Core utilities
 --------------------------------------------------------------------}
 
+-- Form an application to type and value arguments.
 apps :: Id -> [Type] -> [CoreExpr] -> CoreExpr
 apps f ts es
   | tyArity f /= length ts =
@@ -130,24 +126,18 @@ apps f ts es
    arity = tyArity f
    ntys  = length ts
 
+-- Number of type arguments.
 tyArity :: Id -> Int
 tyArity = length . fst . splitForAllTys . varType
 
+-- Apply a named id to type and value arguments.
 apps' :: String -> [Type] -> [CoreExpr] -> TranslateU CoreExpr
 apps' s ts es = (\ i -> apps i ts es) <$> findIdT s
 
-tyNumArgs :: Type -> Int
-tyNumArgs (FunTy    _ ty')       = 1 + tyNumArgs ty'
-tyNumArgs (ForAllTy _ ty')       = 1 + tyNumArgs ty'
-tyNumArgs (coreView -> Just ty') = tyNumArgs ty'
-tyNumArgs _                      = 0
-
-uqVarName :: Var -> String
-uqVarName = uqName . varName
-
+-- exprType gives an obscure warning when given a Type expression.
 exprType' :: CoreExpr -> Type
 exprType' (Type {}) = error "exprType': given a Type"
-exprType' e = exprType e
+exprType' e         = exprType e
 
 isType :: CoreExpr -> Bool
 isType (Type {}) = True
@@ -180,6 +170,9 @@ isUnitTy _                = False
 isBoolTy :: Type -> Bool
 isBoolTy (TyConApp tc []) = tc == boolTyCon
 isBoolTy _                = False
+
+dcUnboxedArg :: DataCon -> Bool
+dcUnboxedArg = isSuffixOf "#" . uqName . dataConName
 
 {--------------------------------------------------------------------
     HERMIT utilities
@@ -224,7 +217,7 @@ tcFind2 :: String -> TranslateU (Binop Type)
 tcFind2 = tcFind tcApp2
 
 -- mkVoid :: TranslateU CoreExpr
--- mkVoid = Var <$> findIdT "TypeEncode.Encode.void"
+-- mkVoid = Var <$> findIdT (encName "void")
 
 mkUnit :: TranslateU CoreExpr
 mkUnit = return (mkCoreTup [])
@@ -282,11 +275,12 @@ decodeR ty ty' = idR >>= decodeOf ty ty'
 
 -- e --> decode (encode e)
 decodeEncodeR :: ReExpr
-decodeEncodeR = do e   <- idR
+decodeEncodeR = do e <- idR
                    guardMsg (not (isType e)) "Given a Type expression"
                    let ty = exprType' e
                    ty' <- encodeTy ty
                    decodeR ty ty' . encodeR ty ty'
+-- TODO: Drop decodeEncodeR
 
 -- encode @a @b u --> ((a,b),u) (with type arguments)
 unEncode' :: TranslateH CoreExpr ((Type,Type),CoreExpr)
@@ -310,10 +304,13 @@ unDecode = snd <$> unDecode'
 unEncodeDecode :: ReExpr
 unEncodeDecode = unEncode >>> unDecode
 
-isStandardTy :: Type -> Bool
-isStandardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
+standardTy :: Type -> Bool
+standardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
 
--- To encode Bool also, remove isBoolTy from isStandardTy.
+-- To encode Bool also, remove isBoolTy from standardTy.
+
+tcCons :: TyCon -> Tree DataCon
+tcCons = toTree . tyConDataCons
 
 encodeDC :: [Type] -> DataCon -> Type
 encodeDC tcTys dc = foldT unitTy pairTy (toTree argTys)
@@ -331,12 +328,11 @@ encodeDCs voidTy eitherTy tcTys dcs =
   foldT voidTy eitherTy (encodeDC tcTys <$> dcs)
 
 encodeTy :: Type -> TranslateU Type
-encodeTy (coreView -> Just ty)                   = encodeTy ty
-encodeTy (isStandardTy -> True)                  = fail "Already a standard type"
-encodeTy (TyConApp tc tcTys) =
-  do enc <- mkEncodeDCs
-     return (enc tcTys (toTree (tyConDataCons tc)))
-encodeTy _                                       = fail "encodeTy: not handled"
+encodeTy (coreView -> Just ty) = encodeTy ty
+encodeTy (standardTy -> True)  = fail "Already a standard type"
+encodeTy (TyConApp tc tcTys)   = do enc <- mkEncodeDCs
+                                    return (enc tcTys (tcCons tc))
+encodeTy _                     = fail "encodeTy: not handled"
 
 findCon :: TranslateH (DataCon, [Type], [CoreExpr]) (Type,CoreExpr)
 findCon =
@@ -359,7 +355,7 @@ findCon =
               (eitherTy tl tr, (lft tl tr <$> mbl) `mplus` (rht tl tr <$> mbr))
      return $
        second (fromMaybe (error "findCon: Didn't find data con")) $
-         find (toTree (tyConDataCons (dataConOrigTyCon dc)))
+         find (tcCons (dataConTyCon dc))
 
 -- Not a function and not a forall
 groundType :: Type -> Bool
@@ -379,10 +375,7 @@ reConstruct :: ReExpr
 reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
  where
    encodeCon :: TranslateH CoreExpr (Type,CoreExpr)
-   encodeCon = acceptGroundTyped
-           >>> accepterR (arr (not . isType))
-           >>> callDataConT
-           >>> findCon
+   encodeCon = acceptGroundTyped >>> callDataConT >>> findCon
    decodeCon :: TranslateH (Type,(Type,CoreExpr)) CoreExpr
    decodeCon = do (ty,(ty',e)) <- idR
                   decodeOf ty ty' e
@@ -391,13 +384,6 @@ reConstruct = (arr exprType' &&& encodeCon) >>> decodeCon
 -- Investigate.
 
 -- TODO: Eta-expand as necessary
--- TODO: After I fix encodeTy, maybe drop some guards in reConstruct.
-
-dcUnboxedArg :: DataCon -> Bool
-dcUnboxedArg = isSuffixOf "#" . uqName . dataConName
-
-dcAllCons :: DataCon -> [DataCon]
-dcAllCons = tyConDataCons . dataConTyCon
 
 {--------------------------------------------------------------------
     Plugin
@@ -413,5 +399,6 @@ externC name rew help = external name (promoteR rew :: ReCore) [help]
 externals :: [External]
 externals =
   [ externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
-  , externC "re-construct" reConstruct "v --> decode (encode v)"
+  , externC "un-encode-decode" unEncodeDecode "encode (decode e) -> e"
+  , externC "re-construct" reConstruct "encode constructor application"
   ]
