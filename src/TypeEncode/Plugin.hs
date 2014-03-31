@@ -19,7 +19,7 @@
 --   cd ../../test; hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
 ----------------------------------------------------------------------
 
-module TypeEncode.Plugin (encodeTypesR,plugin) where
+module TypeEncode.Plugin (ReExpr,encodeTypesR,plugin) where
 
 -- TODO: Thin imports.
 
@@ -454,6 +454,7 @@ pairCon = tupleCon BoxedTuple 2
 plugin :: Plugin
 plugin = hermitPlugin (phase 0 . interactive externals)
 
+-- | Combination of type-decoding transformations.
 encodeTypesR :: ReExpr
 encodeTypesR = reConstruct <+ reCase
 
@@ -466,5 +467,7 @@ externals =
   [ externC "un-encode-decode" unEncodeDecode "encode (decode e) -> e"
   , externC "re-construct" reConstruct "encode constructor application"
   , externC "re-case" reCase "encode case expression"
+  , externC "encode-types" encodeTypesR
+     "encode case expressions and constructor applications"
   -- , externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
   ]
