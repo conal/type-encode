@@ -3,7 +3,7 @@
 {-# LANGUAGE DeriveFunctor, DeriveFoldable #-}
 {-# OPTIONS_GHC -Wall #-}
 
-{-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
+-- {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
 {-# OPTIONS_GHC -fno-warn-unused-binds   #-} -- TEMP
 
 ----------------------------------------------------------------------
@@ -26,36 +26,25 @@ module TypeEncode.Plugin (plugin) where
 import Prelude hiding (id,(.))
 
 import Control.Category (Category(..))
-import Data.Monoid (Monoid(..))
 import Data.Functor ((<$>))
 import Data.Foldable (Foldable(..))
-import Control.Monad ((<=<),(=<<), liftM2,mplus)
+import Control.Monad (mplus)
 import Control.Arrow (Arrow(..),(>>>))
 import Data.List (intercalate,isSuffixOf)
-import Data.Maybe (fromMaybe,isJust)
+import Data.Maybe (fromMaybe)
 import Text.Printf (printf)
 
 -- GHC
 import PrelNames (eitherTyConName)
 
-import HERMIT.Monad (newIdH,HermitM)
-import HERMIT.Context (BoundVars,HasGlobalRdrEnv(..),HermitC)
-import HERMIT.Core (Crumb(..),localFreeIdsExpr,CoreProg(..),bindsToProg,progToBinds)
+import HERMIT.Monad (newIdH)
+import HERMIT.Context (BoundVars,HasGlobalRdrEnv(..))
 -- Note that HERMIT.Dictionary re-exports HERMIT.Dictionary.*
-import HERMIT.Dictionary
-  ( observeR,findIdT,callNameT
-  , rulesR,inlineR,inlineNamesR,simplifyR
-  , letFloatLetR,letFloatTopR,letElimR,cleanupUnfoldR
-  , etaExpandR, betaReduceR, letNonRecSubstSafeR
-  , callDataConT, callSaturatedT
-  -- , unshadowR   -- May need this one later
-  )
-import HERMIT.External (External,external,ExternalName,ExternalHelp)
+import HERMIT.Dictionary (findIdT, callNameT, callDataConT)
+import HERMIT.External (External,external,ExternalName)
 import HERMIT.GHC hiding (FastString(..))
 import HERMIT.Kure hiding (apply)
 import HERMIT.Plugin (hermitPlugin,phase,interactive)
-
-import TypeEncode.Encode (encode,decode)
 
 {--------------------------------------------------------------------
     Misc
