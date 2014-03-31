@@ -4,7 +4,7 @@
 {-# OPTIONS_GHC -Wall #-}
 
 -- {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
-{-# OPTIONS_GHC -fno-warn-unused-binds   #-} -- TEMP
+-- {-# OPTIONS_GHC -fno-warn-unused-binds   #-} -- TEMP
 
 ----------------------------------------------------------------------
 -- |
@@ -19,7 +19,7 @@
 --   cd ../../test; hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
 ----------------------------------------------------------------------
 
-module TypeEncode.Plugin (plugin) where
+module TypeEncode.Plugin (encodeTypesR,plugin) where
 
 -- TODO: Thin imports.
 
@@ -138,22 +138,12 @@ pairTy a b = mkBoxedTupleTy [a,b]
 tcApp0 :: TyCon -> Type
 tcApp0 tc = TyConApp tc []
 
-tcApp1 :: TyCon -> Unop Type
-tcApp1 tc a = TyConApp tc [a]
-
 tcApp2 :: TyCon -> Binop Type
 tcApp2 tc a b = TyConApp tc [a,b]
 
 isPairTy :: Type -> Bool
 isPairTy (TyConApp tc [_,_]) = isBoxedTupleTyCon tc
 isPairTy _                   = False
-
-unPairTy :: Type -> (Type,Type)
-unPairTy (coreView -> Just ty) = unPairTy ty -- needed?
-unPairTy (TyConApp tc [a,b])
-  | isBoxedTupleTyCon tc = (a,b)
-  | otherwise = error $ "unPairTy: not a pair: " ++ uqName (tyConName tc)
-unPairTy _ = error "unPairTy: not a TyConApp"
 
 isEitherTy :: Type -> Bool
 isEitherTy (TyConApp tc [_,_]) = tyConName tc == eitherTyConName
@@ -205,9 +195,6 @@ tcFind h = fmap h . findTyConT
 
 tcFind0 :: String -> TranslateU Type
 tcFind0 = tcFind tcApp0
-
-tcFind1 :: String -> TranslateU (Unop Type)
-tcFind1 = tcFind tcApp1
 
 tcFind2 :: String -> TranslateU (Binop Type)
 tcFind2 = tcFind tcApp2
@@ -262,12 +249,6 @@ encodeOf ty ty' e = appsE "encode" [ty,ty'] [e]
 
 decodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
 decodeOf ty ty' e = appsE "decode" [ty',ty] [e]
-
-encodeR :: Type -> Type -> ReExpr
-encodeR ty ty' = idR >>= encodeOf ty ty'
-
-decodeR :: Type -> Type -> ReExpr
-decodeR ty ty' = idR >>= decodeOf ty ty'
 
 standardTy :: Type -> Bool
 standardTy (coreView -> Just ty) = standardTy ty
@@ -410,13 +391,6 @@ mkEitherTree ran funs =
 
 -- either :: forall a c b. (a -> c) -> (b -> c) -> Either a b -> c
 
--- Lambda-case with one tuple pattern
-lamCase1 :: Tree Var -> CoreExpr -> TranslateH a CoreExpr
-lamCase1 (Leaf x) rhs  = return (Lam x rhs)
-lamCase1 vars rhs =
-  do p <- constT (newIdH "p" (varsType vars))
-     Lam p <$> case1 (Var p) vars rhs
-
 case1 :: CoreExpr -> Tree Var -> CoreExpr -> TranslateH a CoreExpr
 case1 scrut Empty rhs =
   do wild <- constT (newIdH "wild" (exprType' scrut))
@@ -480,8 +454,8 @@ pairCon = tupleCon BoxedTuple 2
 plugin :: Plugin
 plugin = hermitPlugin (phase 0 . interactive externals)
 
-encodeTypes :: ReExpr
-encodeTypes = reConstruct <+ reCase
+encodeTypesR :: ReExpr
+encodeTypesR = reConstruct <+ reCase
 
 externC :: Injection a Core =>
            ExternalName -> RewriteH a -> String -> External
