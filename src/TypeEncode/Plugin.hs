@@ -29,7 +29,7 @@ import Control.Category (Category(..))
 import Data.Monoid (Monoid(..))
 import Data.Functor ((<$>))
 import Data.Foldable (Foldable(..))
-import Control.Monad ((<=<),liftM2,mplus)
+import Control.Monad ((<=<),(=<<), liftM2,mplus)
 import Control.Arrow (Arrow(..),(>>>))
 import Data.List (intercalate,isSuffixOf)
 import Data.Maybe (fromMaybe,isJust)
@@ -158,6 +158,13 @@ tcApp2 tc a b = TyConApp tc [a,b]
 isPairTy :: Type -> Bool
 isPairTy (TyConApp tc [_,_]) = isBoxedTupleTyCon tc
 isPairTy _                   = False
+
+unPairTy :: Type -> (Type,Type)
+unPairTy (coreView -> Just ty) = unPairTy ty -- needed?
+unPairTy (TyConApp tc [a,b])
+  | isBoxedTupleTyCon tc = (a,b)
+  | otherwise = error $ "unPairTy: not a pair: " ++ uqName (tyConName tc)
+unPairTy _ = error "unPairTy: not a TyConApp"
 
 isEitherTy :: Type -> Bool
 isEitherTy (TyConApp tc [_,_]) = tyConName tc == eitherTyConName
@@ -393,12 +400,99 @@ reConstruct = acceptWithFailMsgR (not . isType) "Given a Type"  >>>
 
 -- TODO: Eta-expand as necessary
 
+-- mkEitherF :: TranslateU (Binop CoreExpr)
+-- mkEitherF = error "mkEitherF: not yet implemented"
+
+-- Build a tree of either applications and return the domain of the resulting
+-- function. The range is given.
+mkEitherTree :: Type -> Tree CoreExpr -> TranslateU (Type,CoreExpr)
+mkEitherTree ran funs =
+  do eitherF  <- findIdT "either"
+     eitherTy <- mkEither 
+     let eithers :: Tree CoreExpr -> (Type,CoreExpr)
+         eithers Empty          = error "empty either"  -- What to do here?
+         eithers (Leaf f)       = (fst (splitFunTy (exprType' f)), f)
+         eithers (Branch fs gs) =
+           (eitherTy domf domg, apps eitherF [domf,ran,domg] [f,g])
+          where
+            (domf,f) = eithers fs
+            (domg,g) = eithers gs
+     return (eithers funs)
+
+-- either :: forall a c b. (a -> c) -> (b -> c) -> Either a b -> c
+
+-- Lambda-case with one tuple pattern
+lamCase1 :: Tree Var -> CoreExpr -> TranslateH a CoreExpr
+lamCase1 (Leaf x) rhs  = return (Lam x rhs)
+lamCase1 vars rhs =
+  do p <- constT (newIdH "p" (varsType vars))
+     Lam p <$> case1 (Var p) vars rhs
+
+case1 :: CoreExpr -> Tree Var -> CoreExpr -> TranslateH a CoreExpr
+case1 scrut Empty rhs =
+  do wild <- constT (newIdH "wild" (exprType' scrut))
+     return $
+       Case scrut wild (exprType' rhs) [(DataAlt unitCon,[],rhs)]
+case1 _ (Leaf _) _ = error "case1: Leaf"
+case1 scrut (Branch (Leaf u) (Leaf v)) rhs =
+  do wild <- constT (newIdH "wild" (exprType' scrut))
+     return $
+       Case scrut wild (exprType' rhs) [(DataAlt pairCon,[u,v],rhs)]
+case1 scrut (Branch (Leaf u) vs) rhs =
+  do v <- constT (newIdH "v" (varsType vs))
+     rhsv <- case1 (Var v) vs rhs
+     case1 scrut (Branch (Leaf u) (Leaf v)) rhsv
+case1 scrut (Branch us (Leaf v)) rhs =
+  do u <- constT (newIdH "u" (varsType us))
+     rhsu <- case1 (Var u) us rhs
+     case1 scrut (Branch (Leaf u) (Leaf v)) rhsu
+case1 scrut (Branch us vs) rhs =
+  do u <- constT (newIdH "u" (varsType us))
+     rhsu <- case1 (Var u) us rhs
+     v <- constT (newIdH "v" (varsType vs))
+     rhsv <- case1 (Var v) vs rhsu
+     case1 scrut (Branch (Leaf u) (Leaf v)) rhsv
+ 
+-- TODO: Refactor much more neatly!
+
+varsType :: Tree Var -> Type
+varsType = foldT unitTy pairTy . fmap varType
+
+reCase :: ReExpr
+reCase = do Case scrut _wild bodyTy alts <- idR
+            let scrutTy = exprType' scrut
+                (_,tyArgs) = splitAppTys scrutTy
+                reAlt :: CoreAlt -> TranslateH a CoreExpr
+                reAlt (DataAlt _con, [var], rhs) = return (Lam var rhs)
+                reAlt (DataAlt con, vars, rhs) =
+                  do z <- constT (newIdH "z" (encodeDC tyArgs con))
+                     Lam z <$> case1 (Var z) (toTree vars) rhs
+                reAlt _ = fail "Alternative is not a DataAlt"
+            guardMsg (not (standardTy scrutTy)) "Already a standard type"
+            (scrutTy',alts') <- mkEitherTree bodyTy =<< (toTree <$> mapM reAlt alts)
+            scrut' <- encodeOf scrutTy scrutTy' scrut
+            return (App alts' scrut')
+
+-- TODO: check for use of _wild
+
+unitCon, pairCon :: DataCon
+unitCon = tupleCon BoxedTuple 0
+pairCon = tupleCon BoxedTuple 2
+
+-- lamPairTree = error "lamPairTree: Please implement"
+
+-- TODO: Check that all constructors are present.
+-- TODO: Check for wild.
+
 {--------------------------------------------------------------------
     Plugin
 --------------------------------------------------------------------}
 
 plugin :: Plugin
 plugin = hermitPlugin (phase 0 . interactive externals)
+
+encodeTypes :: ReExpr
+encodeTypes = reConstruct <+ reCase
 
 externC :: Injection a Core =>
            ExternalName -> RewriteH a -> String -> External
@@ -408,5 +502,6 @@ externals :: [External]
 externals =
   [ externC "un-encode-decode" unEncodeDecode "encode (decode e) -> e"
   , externC "re-construct" reConstruct "encode constructor application"
+  , externC "re-case" reCase "encode case expression"
   -- , externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
   ]
