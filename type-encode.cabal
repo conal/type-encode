@@ -6,7 +6,7 @@ Synopsis:           A HERMIT-based GHC plugin that converts data types to sum-of
 Category:           Language
 Description:        A HERMIT-based GHC plugin that converts data types to sum-of-products form.
 Author:             Conal Elliott
-Maintainer:         conal@tabula.com
+Maintainer:         conal@conal.net
 Copyright:          (c) 2014 by Tabula, Inc
 License:            BSD3
 License-File:       COPYING

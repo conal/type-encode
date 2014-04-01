@@ -1,4 +1,4 @@
-{-# LANGUAGE ExplicitForAll, EmptyDataDecls #-}
+{-# LANGUAGE ExplicitForAll, EmptyDataDecls, TypeOperators #-}
 {-# OPTIONS_GHC -Wall #-}
 
 -- {-# OPTIONS_GHC -fno-warn-unused-imports #-} -- TEMP
@@ -15,18 +15,26 @@
 -- Simple interface for encoding & decoding types.
 ----------------------------------------------------------------------
 
-module TypeEncode.Encode (encode,decode,Void) where
+module TypeEncode.Encode (EncodeCat(..),encodeF,decodeF,Void) where
 
--- TODO: Maybe move encode & decode to a type class, after I know how to insert
--- dictionaries. Or leave it alone.
+class EncodeCat k where
+  encode :: forall a b. a `k` b
+  decode :: forall b a. b `k` a
 
-encode :: forall a b. a -> b
-encode = error "encode: not eliminated"
-{-# NOINLINE encode #-}
+instance EncodeCat (->) where
+  encode = encodeF
+  decode = decodeF
 
-decode :: forall b a. b -> a
-decode = error "decode: not eliminated"
-{-# NOINLINE decode #-}
+-- TODO: Eliminate the names "encodeF" and "decodeF" when I know how to
+-- construct dictionaries in Core. Meanwhile, use those names in TypeEncode.Plugin.
+
+encodeF :: forall a b. a -> b
+encodeF = error "encode: not eliminated"
+{-# NOINLINE encodeF #-}
+
+decodeF :: forall b a. b -> a
+decodeF = error "decode: not eliminated"
+{-# NOINLINE decodeF #-}
 
 -- The foralls here indicate the type argument order needed by the plugin.
 

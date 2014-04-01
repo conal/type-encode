@@ -18,7 +18,7 @@
 --   
 ----------------------------------------------------------------------
 
-module Test where
+module Test (case1) where
 
 -- Needed for resolving names. Is there an alternative?
 import GHC.Tuple ()
@@ -46,7 +46,7 @@ t4 = (3,4)
 t5 :: (Int,Int,Int,Int,Int)
 t5 = (3,4,5,6,7)
 
-data A = B Int | C () Bool () Int | Y Int | Z ()
+data A = B Int | C () Bool () Int | Y Int | Z
 
 t6 :: A
 t6 = C () True () 3
@@ -72,9 +72,22 @@ newtype F a = F (a,a)
 -- The next two fail. Appartently callDataConT doesn't work for newtype
 -- constructors. Investigate.
 
-t10 :: F Bool
-t10 = F (False,True)
+case0 :: () -> Bool
+case0 () = False
 
-t11 :: F ()
-t11 = F ((),())
+data G a = G a
 
+case1 :: G Bool -> Bool
+case1 (G x) = not x
+
+case2 :: E Bool -> Bool
+case2 (E zink zonk) = zink || zonk
+
+case4 :: A -> Int
+case4 (B n)        = n
+case4 (C () b _ n) = if b then n else 7
+case4 (Y m)        = m
+case4 Z            = 85
+
+qq :: (G Bool,G Bool) -> Bool
+qq (G a, G b) = a && b

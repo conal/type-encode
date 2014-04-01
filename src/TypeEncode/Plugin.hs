@@ -19,7 +19,14 @@
 --   cd ../../test; hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
 ----------------------------------------------------------------------
 
-module TypeEncode.Plugin (ReExpr,encodeTypesR,plugin) where
+module TypeEncode.Plugin
+  ( -- * Core utilities
+    apps, apps'
+    -- * HERMIT utilities
+  , ReExpr, ReCore, OkCM, TranslateU, findTyConT
+    -- * Type encoding
+  , reCaseR, reConstructR, encodeTypesR, plugin
+  ) where
 
 -- TODO: Thin imports.
 
@@ -245,10 +252,10 @@ callNameEnc :: String -> TranslateH CoreExpr (CoreExpr, [CoreExpr])
 callNameEnc = callNameT . encName
 
 encodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
-encodeOf ty ty' e = appsE "encode" [ty,ty'] [e]
+encodeOf ty ty' e = appsE "encodeF" [ty,ty'] [e]
 
 decodeOf :: Type -> Type -> CoreExpr -> TranslateU CoreExpr
-decodeOf ty ty' e = appsE "decode" [ty',ty] [e]
+decodeOf ty ty' e = appsE "decodeF" [ty',ty] [e]
 
 standardTy :: Type -> Bool
 standardTy (coreView -> Just ty) = standardTy ty
@@ -287,12 +294,12 @@ encodeDCs voidTy eitherTy tcTys dcs =
 
 -- encode @a @b u --> ((a,b),u) (with type arguments)
 unEncode' :: TranslateH CoreExpr ((Type,Type),CoreExpr)
-unEncode' = do (_encode, [Type a, Type b, arg]) <- callNameEnc "encode"
+unEncode' = do (_encode, [Type a, Type b, arg]) <- callNameEnc "encodeF"
                return ((a,b),arg)
 
 -- decode @a @b u --> ((a,b),u) (with type arguments)
 unDecode' :: TranslateH CoreExpr ((Type,Type),CoreExpr)
-unDecode' = do (_decode, [Type a, Type b, arg]) <- callNameEnc "decode"
+unDecode' = do (_decode, [Type a, Type b, arg]) <- callNameEnc "decodeF"
                return ((a,b),arg)
 
 -- encode u --> u (without type arguments)
@@ -355,9 +362,9 @@ acceptGroundTyped =
 
 -- | Rewrite a constructor application, eta-expanding if necessary.
 -- Must be saturated with type and value arguments.
-reConstruct :: ReExpr
-reConstruct = acceptWithFailMsgR (not . isType) "Given a Type"  >>>
-              (arr exprType' &&& id) >>> encodeCon >>> decodeCon
+reConstructR :: ReExpr
+reConstructR = acceptWithFailMsgR (not . isType) "Given a Type"  >>>
+               (arr exprType' &&& id) >>> encodeCon >>> decodeCon
  where
    encodeCon :: TranslateH (Type,CoreExpr) (Type,(Type,CoreExpr))
    encodeCon = acceptGroundTyped *** (callDataConT >>> findCon)
@@ -421,20 +428,20 @@ case1 scrut (Branch us vs) rhs =
 varsType :: Tree Var -> Type
 varsType = foldT unitTy pairTy . fmap varType
 
-reCase :: ReExpr
-reCase = do Case scrut _wild bodyTy alts <- idR
-            let scrutTy = exprType' scrut
-                (_,tyArgs) = splitAppTys scrutTy
-                reAlt :: CoreAlt -> TranslateH a CoreExpr
-                reAlt (DataAlt _con, [var], rhs) = return (Lam var rhs)
-                reAlt (DataAlt con, vars, rhs) =
-                  do z <- constT (newIdH "z" (encodeDC tyArgs con))
-                     Lam z <$> case1 (Var z) (toTree vars) rhs
-                reAlt _ = fail "Alternative is not a DataAlt"
-            guardMsg (not (standardTy scrutTy)) "Already a standard type"
-            (scrutTy',alts') <- mkEitherTree bodyTy =<< (toTree <$> mapM reAlt alts)
-            scrut' <- encodeOf scrutTy scrutTy' scrut
-            return (App alts' scrut')
+reCaseR :: ReExpr
+reCaseR = do Case scrut _wild bodyTy alts <- idR
+             let scrutTy = exprType' scrut
+                 (_,tyArgs) = splitAppTys scrutTy
+                 reAlt :: CoreAlt -> TranslateH a CoreExpr
+                 reAlt (DataAlt _con, [var], rhs) = return (Lam var rhs)
+                 reAlt (DataAlt con, vars, rhs) =
+                   do z <- constT (newIdH "z" (encodeDC tyArgs con))
+                      Lam z <$> case1 (Var z) (toTree vars) rhs
+                 reAlt _ = fail "Alternative is not a DataAlt"
+             guardMsg (not (standardTy scrutTy)) "Already a standard type"
+             (scrutTy',alts') <- mkEitherTree bodyTy =<< (toTree <$> mapM reAlt alts)
+             scrut' <- encodeOf scrutTy scrutTy' scrut
+             return (App alts' scrut')
 
 -- TODO: check for use of _wild
 
@@ -456,7 +463,7 @@ plugin = hermitPlugin (phase 0 . interactive externals)
 
 -- | Combination of type-decoding transformations.
 encodeTypesR :: ReExpr
-encodeTypesR = reConstruct <+ reCase
+encodeTypesR = reConstructR <+ reCaseR
 
 externC :: Injection a Core =>
            ExternalName -> RewriteH a -> String -> External
@@ -465,8 +472,8 @@ externC name rew help = external name (promoteR rew :: ReCore) [help]
 externals :: [External]
 externals =
   [ externC "un-encode-decode" unEncodeDecode "encode (decode e) -> e"
-  , externC "re-construct" reConstruct "encode constructor application"
-  , externC "re-case" reCase "encode case expression"
+  , externC "re-construct" reConstructR "encode constructor application"
+  , externC "re-case" reCaseR "encode case expression"
   , externC "encode-types" encodeTypesR
      "encode case expressions and constructor applications"
   -- , externC "decode-encode" decodeEncodeR "e --> decode (encode e)"
