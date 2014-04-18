@@ -14,7 +14,7 @@
 -- 
 -- Test the plugin. To run:
 -- 
---   hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
+--   hermit Test.hs -v0 -opt=TypeEncode.Plugin Auto.hss
 --   
 ----------------------------------------------------------------------
 
