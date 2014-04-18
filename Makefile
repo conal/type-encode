@@ -1,5 +1,5 @@
 install:
-	cabal install --disable-documentation --force-reinstalls
+	cabal install --force-reinstalls -j1 --disable-documentation
 
 run:
 	hermit test/Simple.hs -opt=LambdaCCC +Main
