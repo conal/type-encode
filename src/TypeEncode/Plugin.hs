@@ -25,7 +25,7 @@
 
 module TypeEncode.Plugin
   ( -- * Core utilities
-    apps, apps', callNameSplitT, unCall, unCall1
+    apps, apps', callSplitT, callNameSplitT, unCall, unCall1
     -- * HERMIT utilities
   , liftedKind, unliftedKind
   , ReExpr, ReCore, OkCM, TransformU, findTyConT
@@ -58,7 +58,7 @@ import PrelNames (
 import HERMIT.Monad (newIdH,HasModGuts(..))
 import HERMIT.Context (BoundVars)
 -- Note that HERMIT.Dictionary re-exports HERMIT.Dictionary.*
-import HERMIT.Dictionary (findIdT, callNameT, callDataConT)
+import HERMIT.Dictionary (findIdT, callT, callNameT, callDataConT)
 -- import HERMIT.Dictionary (traceR)
 import HERMIT.External (External,external,ExternalName)
 import HERMIT.GHC hiding (FastString(..))
@@ -133,6 +133,9 @@ apps f ts es
  where
    arity = tyArity f
    ntys  = length ts
+
+-- Note: With unlifted types, mkCoreApps might make a case expression.
+-- If we don't want to, maybe use mkApps.
 
 -- Number of type arguments.
 tyArity :: Id -> Int
@@ -268,11 +271,19 @@ tcFind0 = tcFind tcApp0
 tcFind2 :: String -> TransformU (Binop Type)
 tcFind2 = tcFind tcApp2
 
+callSplitT :: MonadCatch m =>
+              Transform c m CoreExpr (CoreExpr, [Type], [Expr CoreBndr])
+callSplitT = do (f,args) <- callT
+                let (tyArgs,valArgs) = splitTysVals args
+                return (f,tyArgs,valArgs)
+
 callNameSplitT :: MonadCatch m => String
                -> Transform c m CoreExpr (CoreExpr, [Type], [Expr CoreBndr])
 callNameSplitT name = do (f,args) <- callNameT name
                          let (tyArgs,valArgs) = splitTysVals args
                          return (f,tyArgs,valArgs)
+
+-- TODO: refactor with something like HERMIT's callPredT
 
 -- | Uncall a named function
 unCall :: String -> TransformH CoreExpr [CoreExpr]
