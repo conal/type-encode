@@ -48,6 +48,7 @@ import Data.List (isSuffixOf)
 #endif
 import Data.Maybe (fromMaybe)
 import Text.Printf (printf)
+import Control.Monad.IO.Class (MonadIO)
 
 -- GHC
 import Unique(hasKey)
@@ -55,7 +56,7 @@ import PrelNames (
   liftedTypeKindTyConKey,unliftedTypeKindTyConKey,constraintKindTyConKey,
   eitherTyConName)
 
-import HERMIT.Monad (newIdH,HasModGuts(..))
+import HERMIT.Monad (newIdH,HasModGuts(..),HasHscEnv(..))
 import HERMIT.Context (BoundVars)
 -- Note that HERMIT.Dictionary re-exports HERMIT.Dictionary.*
 import HERMIT.Dictionary (findIdT, callT, callNameT, callDataConT)
@@ -212,19 +213,23 @@ splitTysVals rest             = ([],rest)
     HERMIT utilities
 --------------------------------------------------------------------}
 
+-- Common context & monad constraints
+-- type OkCM c m =
+--   ( HasDynFlags m, Functor m, MonadThings m, MonadCatch m
+--   , BoundVars c, HasModGuts m )
+
+type OkCM c m = 
+  ( BoundVars c, Functor m, HasDynFlags m, HasModGuts m, HasHscEnv m
+  , MonadCatch m, MonadIO m, MonadThings m )
+
+type TransformU b = forall c m a. OkCM c m => Transform c m a b
+
 -- Apply a named id to type and value arguments.
 apps' :: String -> [Type] -> [CoreExpr] -> TransformU CoreExpr
 apps' s ts es = (\ i -> apps i ts es) <$> findIdT s
 
 type ReExpr = RewriteH CoreExpr
 type ReCore = RewriteH Core
-
--- Common context & monad constraints
-type OkCM c m =
-  ( HasDynFlags m, Functor m, MonadThings m, MonadCatch m
-  , BoundVars c, HasModGuts m )
-
-type TransformU b = forall c m a. OkCM c m => Transform c m a b
 
 -- | Lookup the name in the context first, then, failing that, in GHC's global
 -- reader environment.
