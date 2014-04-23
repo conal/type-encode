@@ -21,7 +21,7 @@
 --   cd ../../test; hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
 ----------------------------------------------------------------------
 
-#define OnlyLifted
+-- #define OnlyLifted
 
 module TypeEncode.Plugin
   ( -- * Core utilities
@@ -354,7 +354,7 @@ decodeOf ty ty' e = do -- guardMsg (not (unliftedType ty)) "decodeOf: unlifted t
 
 standardTy :: Type -> Bool
 standardTy (coreView -> Just ty) = standardTy ty
-standardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy,isBoolTy]
+standardTy ty = any ($ ty) [isPairTy,isEitherTy,isUnitTy]  -- ,isBoolTy
 
 #if 0
 
