@@ -21,7 +21,7 @@
 --   cd ../../test; hermit Test.hs -v0 -opt=TypeEncode.Plugin +Test Auto.hss
 ----------------------------------------------------------------------
 
--- #define OnlyLifted
+#define OnlyLifted
 
 module TypeEncode.Plugin
   ( -- * Core utilities
