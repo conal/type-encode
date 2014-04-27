@@ -8,6 +8,7 @@ Description:        A HERMIT-based GHC plugin that converts data types to sum-of
 Author:             Conal Elliott
 Maintainer:         conal@conal.net
 Copyright:          (c) 2014 by Tabula, Inc
+Homepage:           http://github.com/conal/type-encode
 License:            BSD3
 License-File:       COPYING
 Stability:          experimental
@@ -27,8 +28,9 @@ Library
                   , ghc >= 7.6
                   , ghc-prim
                   , transformers
-                  , kure   >= 0.4.0.0
+                  , kure   >= 2.16.0
                   , hermit >= 0.4.0.0
+                  , hermit-extras >= 0.1
   Exposed-Modules:
                     TypeEncode.Encode
                     TypeEncode.Plugin

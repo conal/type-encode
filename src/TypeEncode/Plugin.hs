@@ -24,13 +24,7 @@
 #define OnlyLifted
 
 module TypeEncode.Plugin
-  ( -- * Core utilities
-    apps, apps', callSplitT, callNameSplitT, unCall, unCall1
-    -- * HERMIT utilities
-  , liftedKind, unliftedKind
-  , ReExpr, ReCore, OkCM, TransformU, findTyConT
-    -- * Type encoding
-  , encodeOf, decodeOf
+  ( encodeOf, decodeOf
   , reCaseR, reConstructR, encodeTypesR, plugin
   , externals
   ) where
@@ -42,39 +36,26 @@ import Data.Functor ((<$>))
 import Data.Foldable (Foldable(..))
 import Control.Monad (mplus)
 import Control.Arrow (Arrow(..),(>>>))
-import Data.List (intercalate)
 #ifdef OnlyLifted
 import Data.List (isSuffixOf)
 #endif
 import Data.Maybe (fromMaybe)
-import Text.Printf (printf)
-import Control.Monad.IO.Class (MonadIO)
 
--- GHC
-import Unique(hasKey)
-import PrelNames (
-  liftedTypeKindTyConKey,unliftedTypeKindTyConKey,constraintKindTyConKey,
-  eitherTyConName)
-
-import HERMIT.Monad (newIdH,HasModGuts(..),HasHscEnv(..))
-import HERMIT.Context (BoundVars)
+import HERMIT.Monad (newIdH)
 -- Note that HERMIT.Dictionary re-exports HERMIT.Dictionary.*
-import HERMIT.Dictionary (findIdT, callT, callNameT, callDataConT)
+import HERMIT.Dictionary (findIdT, callNameT, callDataConT)
 -- import HERMIT.Dictionary (traceR)
 import HERMIT.External (External,external,ExternalName)
 import HERMIT.GHC hiding (FastString(..))
 import HERMIT.Kure hiding (apply)
 import HERMIT.Plugin (hermitPlugin,phase,interactive)
 
+-- From hermit-extras
+import HERMIT.Extras
+
 {--------------------------------------------------------------------
     Misc
 --------------------------------------------------------------------}
-
--- | Unary transformation
-type Unop a = a -> a
-
--- | Binary transformation
-type Binop a = a -> Unop a
 
 -- Binary leaf tree. Used to construct balanced nested sum and product types.
 data Tree a = Empty | Leaf a | Branch (Tree a) (Tree a)
@@ -120,62 +101,6 @@ instance Monoid EitherTy where
 
 #endif
 
-{--------------------------------------------------------------------
-    Core utilities
---------------------------------------------------------------------}
-
--- Form an application to type and value arguments.
-apps :: Id -> [Type] -> [CoreExpr] -> CoreExpr
-apps f ts es
-  | tyArity f /= length ts =
-      error $ printf "apps: Id %s wants %d type arguments but got %d."
-                     (var2String f) arity ntys
-  | otherwise = mkCoreApps (varToCoreExpr f) (map Type ts ++ es)
- where
-   arity = tyArity f
-   ntys  = length ts
-
--- Note: With unlifted types, mkCoreApps might make a case expression.
--- If we don't want to, maybe use mkApps.
-
--- Number of type arguments.
-tyArity :: Id -> Int
-tyArity = length . fst . splitForAllTys . varType
-
--- exprType gives an obscure warning when given a Type expression.
-exprType' :: CoreExpr -> Type
-exprType' (Type {}) = error "exprType': given a Type"
-exprType' e         = exprType e
-
-isType :: CoreExpr -> Bool
-isType (Type {}) = True
-isType _         = False
-
-pairTy :: Binop Type
-pairTy a b = mkBoxedTupleTy [a,b]
-
-tcApp0 :: TyCon -> Type
-tcApp0 tc = TyConApp tc []
-
-tcApp2 :: TyCon -> Binop Type
-tcApp2 tc a b = TyConApp tc [a,b]
-
-isPairTy :: Type -> Bool
-isPairTy (TyConApp tc [_,_]) = isBoxedTupleTyCon tc
-isPairTy _                   = False
-
-isEitherTy :: Type -> Bool
-isEitherTy (TyConApp tc [_,_]) = tyConName tc == eitherTyConName
-isEitherTy _                   = False
-
-isUnitTy :: Type -> Bool
-isUnitTy (TyConApp tc []) = tc == unitTyCon
-isUnitTy _                = False
-
-isBoolTy :: Type -> Bool
-isBoolTy (TyConApp tc []) = tc == boolTyCon
-isBoolTy _                = False
-
 #ifdef OnlyLifted
 
 dcUnboxedArg :: DataCon -> Bool
@@ -185,130 +110,6 @@ dcUnboxedArg = isSuffixOf "#" . uqName . dataConName
 
 #endif
 
-liftedKind :: Kind -> Bool
-liftedKind (TyConApp tc []) =
-  any (tc `hasKey`) [liftedTypeKindTyConKey, constraintKindTyConKey]
-liftedKind _                = False
-
-unliftedKind :: Kind -> Bool
-unliftedKind (TyConApp tc []) = tc `hasKey` unliftedTypeKindTyConKey
-unliftedKind _                = False
-
--- TODO: Switch to isLiftedTypeKind and isUnliftedTypeKind from Kind (in GHC).
--- When I tried earlier, I lost my inlinings. Investigate!
--- <https://github.com/conal/type-encode/issues/1>
-
-#ifdef OnlyLifted
-
-unliftedType :: Type -> Bool
-unliftedType = unliftedKind . typeKind
-
-#endif
-
-splitTysVals :: [Expr b] -> ([Type], [Expr b])
-splitTysVals (Type ty : rest) = first (ty :) (splitTysVals rest)
-splitTysVals rest             = ([],rest)
-
-{--------------------------------------------------------------------
-    HERMIT utilities
---------------------------------------------------------------------}
-
--- Common context & monad constraints
--- type OkCM c m =
---   ( HasDynFlags m, Functor m, MonadThings m, MonadCatch m
---   , BoundVars c, HasModGuts m )
-
-type OkCM c m = 
-  ( BoundVars c, Functor m, HasDynFlags m, HasModGuts m, HasHscEnv m
-  , MonadCatch m, MonadIO m, MonadThings m )
-
-type TransformU b = forall c m a. OkCM c m => Transform c m a b
-
--- Apply a named id to type and value arguments.
-apps' :: String -> [Type] -> [CoreExpr] -> TransformU CoreExpr
-apps' s ts es = (\ i -> apps i ts es) <$> findIdT s
-
-type ReExpr = RewriteH CoreExpr
-type ReCore = RewriteH Core
-
--- | Lookup the name in the context first, then, failing that, in GHC's global
--- reader environment.
-findTyConT :: String -> TransformU TyCon
-findTyConT nm =
-  prefixFailMsg ("Cannot resolve name " ++ nm ++ "; ") $
-  contextonlyT (findTyConMG nm)
-
-#if 0
-
-findTyConMG :: OkCM c m => String -> c -> m TyCon
-findTyConMG nm c =
-    case filter isTyConName $ findNamesFromString (hermitGlobalRdrEnv c) nm of
-      [n] -> lookupTyCon n
-      ns  -> do dynFlags <- getDynFlags
-                fail $ show (length ns) 
-                     ++ " matches found: "
-                     ++ intercalate ", " (showPpr dynFlags <$> ns)
-
-#else
-
-findTyConMG :: OkCM c m => String -> c -> m TyCon
-findTyConMG nm _ =
-  do rdrEnv <- mg_rdr_env <$> getModGuts
-     case filter isTyConName $ findNamesFromString rdrEnv nm of
-       [n] -> lookupTyCon n
-       ns  -> do dynFlags <- getDynFlags
-                 fail $ show (length ns) 
-                      ++ " matches found: "
-                      ++ intercalate ", " (showPpr dynFlags <$> ns)
-
-
--- TODO: remove context argument, simplify OkCM, etc. See where it leads.
--- <https://github.com/conal/type-encode/issues/2>
-
-#endif
-
-tcFind :: (TyCon -> b) -> String -> TransformU b
-tcFind h = fmap h . findTyConT
-
-tcFind0 :: String -> TransformU Type
-tcFind0 = tcFind tcApp0
-
-tcFind2 :: String -> TransformU (Binop Type)
-tcFind2 = tcFind tcApp2
-
-callSplitT :: MonadCatch m =>
-              Transform c m CoreExpr (CoreExpr, [Type], [Expr CoreBndr])
-callSplitT = do (f,args) <- callT
-                let (tyArgs,valArgs) = splitTysVals args
-                return (f,tyArgs,valArgs)
-
-callNameSplitT :: MonadCatch m => String
-               -> Transform c m CoreExpr (CoreExpr, [Type], [Expr CoreBndr])
-callNameSplitT name = do (f,args) <- callNameT name
-                         let (tyArgs,valArgs) = splitTysVals args
-                         return (f,tyArgs,valArgs)
-
--- TODO: refactor with something like HERMIT's callPredT
-
--- | Uncall a named function
-unCall :: String -> TransformH CoreExpr [CoreExpr]
-unCall f = do (_f,_tys,args) <- callNameSplitT f
-              return args
-
--- | Uncall a named function of one argument
-unCall1 :: String -> ReExpr
-unCall1 f = do [e] <- unCall f
-               return e
-
--- mkVoid :: TransformU CoreExpr
--- mkVoid = Var <$> findIdT (encName "void")
-
-mkUnit :: TransformU CoreExpr
-mkUnit = return (mkCoreTup [])
-
-mkPair :: TransformU (Binop CoreExpr)
-mkPair = return $ \ u v  -> mkCoreTup [u,v]
-
 mkPairTree :: TransformU ([CoreExpr] -> CoreExpr)
 mkPairTree = do unit <- mkUnit
                 pair <- mkPair
@@ -316,19 +117,6 @@ mkPairTree = do unit <- mkUnit
 
 -- TODO: mkUnit, mkPair, mkPairTree needn't be in TransformU
 -- <https://github.com/conal/type-encode/issues/3>
-
-mkLR :: String -> TransformU (Type -> Type -> Unop CoreExpr)
-mkLR name = do f <- findIdT name
-               return $ \ tu tv a -> apps f [tu,tv] [a]
-
-mkLeft  :: TransformU (Type -> Type -> Unop CoreExpr)
-mkLeft  = mkLR "Left"
-
-mkRight :: TransformU (Type -> Type -> Unop CoreExpr)
-mkRight = mkLR "Right"
-
-mkEither :: TransformU (Binop Type)
-mkEither = tcFind2 "Data.Either.Either"
 
 mkVoidTy :: TransformU Type
 mkVoidTy = tcFind0 "TypeEncode.Encode.Void"
